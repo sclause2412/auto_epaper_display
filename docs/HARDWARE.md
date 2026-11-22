@@ -49,7 +49,8 @@ while resetting or applying power can select the ESP32 ROM download mode.
 and waits for BUSY. It then configures panel settings (`0x00`), resolution
 (`0x61`, bytes `03 20 01 E0`, i.e. 800 x 480), and other panel/timing
 registers (`0x15`, `0x50`, `0x60`, `0x65`). This sequence is implemented in
-`src/epd_7in5b_v2.cpp`; do not substitute a different driver's sequence.
+[`firmware/src/epd_7in5b_v2.cpp`](../firmware/src/epd_7in5b_v2.cpp); do not
+substitute a different driver's sequence.
 
 The full-frame `EPD_7IN5B_V2_Display()` sends:
 
@@ -66,9 +67,11 @@ chunk writes. A partial-window path exists separately in
 `EPD_7IN5B_V2_Display_Partial()` and should not be confused with full-frame
 transfer.
 
-The firmware adapter in `src/epd_7in5b_v2.cpp` now uses that command
-sequence for fixed-size streaming writes. Its setup screen is generated one
-row at a time with a 100-byte row buffer; it does not allocate a framebuffer.
+The firmware adapter in
+[`firmware/src/epd_7in5b_v2.cpp`](../firmware/src/epd_7in5b_v2.cpp) uses that
+command sequence for fixed-size streaming writes. Its setup screen is
+generated one row at a time with a 100-byte row buffer; it does not allocate
+a framebuffer.
 
 ## EPD2 conversion, bit order, and plane layout
 
@@ -137,5 +140,5 @@ sleeps the controller, and enters ESP32 deep sleep.
 - BUSY timing under real refresh and appropriate timeout duration.
 - Visible image retention across the proposed sleep/power sequence and
   controller-RAM behavior after deep sleep.
-- BOOT/reset button pin and safe long-press behavior. No BOOT pin is defined
-  by the supplied display demo; GPIO0 remains unconfirmed.
+- Verify the GPIO0 BOOT button's long-press behavior and GPIO2 LED polarity
+  on the physical board.

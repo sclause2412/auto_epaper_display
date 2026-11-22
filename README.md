@@ -1,112 +1,50 @@
 # Smart E-Paper Picture Frame
 
-Project foundation for a battery-powered picture frame using a Waveshare
-7.5-inch E-Paper display (B, presumably V2), a Waveshare e-Paper ESP32
-Driver Board, ESP32 firmware, and a PHP backend.
+A battery-powered digital picture frame built around a Waveshare 7.5-inch
+e-Paper (B) V2 display and the Waveshare ESP32 Driver Board. A PHP backend
+prepares display-ready images; the ESP32 retrieves updates over Wi-Fi and
+keeps power use low between checks.
 
-## Project goal
+## What it does
 
-The server prepares an image for the display. The ESP32 wakes
-periodically, checks an image version/hash, and downloads the image only
-when it has changed. Image data is transferred in small chunks directly
-into the display controller's RAM. The firmware must **never hold a
-complete image buffer** in ESP32 RAM.
+- Provisions Wi-Fi and server settings through an on-device setup portal.
+- Fetches authenticated image metadata and transfers an image only when its
+  content hash changes.
+- Streams image data to the display controller without allocating a complete
+  image framebuffer in ESP32 memory.
+- Sleeps between scheduled image checks.
 
-## Directory structure
+## Project layout
 
-``` text
-E-Paper-Frame/
-├── README.md
-├── docs/
-│   └── EPD2-SPECIFICATION.md
-├── backend/
-│   └── AI-INSTRUCTIONS.md
-└── firmware/
-    └── AI-INSTRUCTIONS.md
-```
+- [`backend/`](./backend/) — PHP image-generation and EPD2 API.
+- [`firmware/`](./firmware/) — pioarduino/PlatformIO ESP32 firmware project.
+- [`docs/EPD2-SPECIFICATION.md`](./docs/EPD2-SPECIFICATION.md) — shared
+  backend/firmware image protocol.
+- [`docs/HARDWARE.md`](./docs/HARDWARE.md) — display, board, and driver
+  verification record.
+- [`docs/BACKEND.md`](./docs/BACKEND.md) — backend requirements and API details.
+- [`docs/FIRMWARE.md`](./docs/FIRMWARE.md) — firmware build, provisioning, and
+  operating details.
 
-The verified hardware behavior and display-driver sequence are recorded in
-`firmware/docs/HARDWARE.md`. Firmware builds must not depend on archived demo
-files; the active font and display implementation are contained in the
-firmware project.
+## Getting started
 
-## Working with two separate AI development projects
+1. Configure and deploy the PHP backend. See
+   [`docs/BACKEND.md`](./docs/BACKEND.md).
+2. Open `firmware/` in VS Code with the pioarduino extension and build the
+   firmware. See [`docs/FIRMWARE.md`](./docs/FIRMWARE.md).
+3. Configure the device through its Wi-Fi setup portal and provide the backend
+   URL and API key there; these values are not compiled into the firmware.
+4. Check the hardware setup and remaining commissioning items in
+   [`docs/HARDWARE.md`](./docs/HARDWARE.md).
 
-There are two separate work areas:
+## Security
 
-1.  **Backend AI:** implements PHP image processing and HTTP endpoints.
-2.  **Firmware AI:** implements ESP32 firmware, Wi-Fi provisioning,
-    streaming, and power management.
+The API key is provisioned on the device rather than embedded in firmware.
+Use HTTPS for deployed backends; HTTP sends the API key without encryption.
+Do not commit production API keys or expose them in URLs or logs.
 
-Both AIs must read and follow `docs/EPD2-SPECIFICATION.md` as the shared
-interface definition. At the start of every AI session, instruct it to
-read its local `AI-INSTRUCTIONS.md` and the shared specification.
+## Hardware status
 
-**Important:** Neither AI may independently change the EPD2 format or
-HTTP interface. Proposed changes must first be discussed and
-incorporated into the shared specification.
-
-Both display API endpoints require the configured shared key in the
-`X-API-Key` HTTP header. Use HTTPS for deployment, keep production keys
-out of public source control, and never put keys in URLs or logs.
-
-## Hardware and driver notes
-
--   Display: Waveshare 7.5inch E-Paper (B), presumably V2, 800 × 480
-    pixels.
--   Controller board: Waveshare e-Paper ESP32 Driver Board.
--   Development environment: Arduino IDE or PlatformIO, C++.
--   Backend: PHP.
-
-The exact display revision and controller must be confirmed using the
-physical hardware markings and the verification record in
-`firmware/docs/HARDWARE.md`. **Do not guess controller commands, RAM
-addresses, bit order, data polarity, or refresh sequence.** Keep that record
-consistent with the active firmware implementation.
-
-## High-level operating sequence
-
--   If Wi-Fi credentials are saved: attempt to connect for up to 5
-    minutes.
--   If no credentials are saved: enter setup mode immediately.
--   If saved credentials cannot connect within 5 minutes: enter setup
-    mode; retain the previous credentials initially.
--   Setup mode: dedicated WPA2 access point and captive portal, active
-    for 10 minutes.
--   After new Wi-Fi credentials are submitted and a connection succeeds:
-    save the credentials and continue normal operation.
--   If the 10-minute setup period expires without successful
-    configuration: display the specified message and enter deep sleep.
-    Do not automatically restart.
--   During normal operation: check the hash, stream the image if it
-    changed, refresh the display, and then sleep for one hour.
--   If the hash is unchanged: do not transfer the image and do not
-    perform an unnecessary refresh.
-
-Full requirements are in `firmware/AI-INSTRUCTIONS.md`.
-
-## Non-negotiable memory requirement
-
-The firmware must not allocate a complete 96,000-byte image buffer. Use
-a small, fixed transfer buffer (for example, 512 bytes) and write
-received data directly into the display controller's RAM. The display
-controller has its own image memory; the ESP32 acts only as a streaming
-source.
-
-Note: the physical e-paper panel typically retains its visible image
-without power. This does **not** mean that the display controller's RAM
-survives an ESP32 deep-sleep cycle. After waking, verify the controller
-state and reinitialize it if necessary.
-
-## Definition of done
-
--   Backend and firmware use exactly the same EPD2 specification.
--   The server requires API-key authentication and returns metadata
-    whose SHA-256 corresponds to the EPD2 image body.
--   Firmware streams image data without a full framebuffer.
--   An unchanged hash causes no image transfer and no unnecessary
-    refresh.
--   Wi-Fi provisioning and timeouts match the firmware requirements.
--   Errors never cause an incomplete image to be recorded as
-    successfully displayed.
--   Build, test, and commissioning steps are documented.
+The display version and driver board are identified in the hardware record.
+Some display/controller behaviors still require verification on the physical
+device; see its outstanding checks before deployment.

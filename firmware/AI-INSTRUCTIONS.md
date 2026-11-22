@@ -9,7 +9,7 @@ Before making any changes, read in full:
 
 1.  `../docs/EPD2-SPECIFICATION.md`
 2.  this file
-3.  `docs/HARDWARE.md`
+3.  `../docs/HARDWARE.md`
 4.  the existing firmware and board configuration
 
 The EPD2 specification is the binding interface to the PHP backend. Do
@@ -18,7 +18,7 @@ and explain the impact on both backend and firmware.
 
 ## Hardware and development environment
 
--   Waveshare 7.5inch E-Paper (B), presumably V2, 800 × 480,
+-   Waveshare 7.5inch E-Paper (B) V2, 800 × 480,
     black/white/red.
 -   Waveshare e-Paper ESP32 Driver Board.
 -   C++ using Arduino IDE or PlatformIO, matching the existing codebase.
@@ -40,8 +40,8 @@ two complete 48,000-byte planes in ESP32 RAM.
 -   The second half contains the 48,000-byte red plane.
 -   If a received chunk crosses the plane boundary, split it correctly.
 -   If the controller API only accepts a complete framebuffer, implement
-    a suitable low-level streaming interface based on the original
-    driver.
+    a suitable low-level streaming interface based on the documented
+    hardware write sequence.
 -   Avoid hidden full-image copies, large temporary arrays, or dynamic
     allocations proportional to image size.
 
@@ -52,7 +52,7 @@ RAM survives ESP32 deep sleep or loss of power.
 
 ## Controller and driver inspection is mandatory
 
-Use `docs/HARDWARE.md` as the hardware verification record and keep it current
+Use `../docs/HARDWARE.md` as the hardware verification record and keep it current
 with the firmware implementation:
 
 1.  exact controller and display revision;

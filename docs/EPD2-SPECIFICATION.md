@@ -1,17 +1,17 @@
 # EPD2 -- Shared Protocol Specification
 
-**Status:** Verified against the firmware hardware record and physical
-hardware, with remaining panel tests documented there.\
+**Status:** Implemented in firmware; remaining physical-panel tests are
+documented in the hardware record.\
 **Purpose:** Binding interface definition shared by the PHP backend and
 ESP32 firmware.
 
 ## 1. Target hardware and image geometry
 
--   Display: Waveshare 7.5inch E-Paper (B), presumably V2.
+-   Display: Waveshare 7.5inch E-Paper (B) V2.
 -   Resolution: 800 × 480 pixels.
 -   Color mode: black / white / red (three colors).
 -   The exact display revision and controller must be confirmed using
-    the actual hardware and original Waveshare driver.
+    the actual hardware and the hardware verification record.
 
 ## 2. Binary data format
 
@@ -45,13 +45,12 @@ on the exact display controller and Waveshare driver in use:
     refresh sequence.
 6.  Whether controller RAM survives ESP32 deep sleep or loss of power.
 
-The firmware AI must determine these details from the unchanged original
-Waveshare code for the exact display revision and record the findings in
-the project documentation. The backend must generate the agreed logical
-pixel and byte format. If the driver expects a different bit polarity or
-byte order, the firmware must transform bytes while streaming with
-constant memory usage, or the specification must be changed by mutual
-agreement.
+The firmware must determine these details for the exact display revision and
+record the findings in the hardware verification record. The backend must
+generate the agreed logical pixel and byte format. If the driver expects a
+different bit polarity or byte order, the firmware must transform bytes while
+streaming with constant memory usage, or the specification must be changed by
+mutual agreement.
 
 **Do not guess controller commands or bit polarity.** Commands such as
 `0x10`, `0x13`, or `0x12` mentioned in earlier discussions are not a
@@ -205,7 +204,7 @@ The firmware must:
     data transfer, and display refresh have succeeded.
 
 The exact way the display driver accepts data in chunks must follow the
-verified implementation documented in `firmware/docs/HARDWARE.md`. If the
+verified implementation documented in `HARDWARE.md`. If the
 existing API only accepts a complete framebuffer, implement a streaming
 interface at the appropriate low-level driver layer.
 
