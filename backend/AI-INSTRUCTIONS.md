@@ -40,7 +40,7 @@ Generate exactly the format defined in `../docs/EPD2-SPECIFICATION.md`:
 -   Red: black bit 0, red bit 1.
 
 The exact bit order within each byte is explicitly marked in the
-specification as requiring verification against the original driver.
+specification as requiring verification against the firmware hardware record.
 Implement the logical encoding cleanly and encapsulate the byte-packing
 decision so it can be adjusted once the firmware/driver inspection
 confirms it. Document the convention actually used. Do not claim it is
@@ -130,7 +130,7 @@ This example intentionally has no automated test suite. For changes to
 the protocol or image conversion, verify endpoint authentication,
 metadata, exact image length, SHA-256, ETag behavior, and color/bit
 encoding manually. Hardware-dependent encoding still requires tests
-against the original driver and physical display.
+against the firmware hardware record and physical display.
 
 ## Documentation and deliverables
 

@@ -25,10 +25,10 @@ E-Paper-Frame/
     └── AI-INSTRUCTIONS.md
 ```
 
-Also place an unchanged copy of the original Waveshare example code in
-`firmware/waveshare-original/`. This is the authoritative reference for
-initialization, controller commands, RAM write sequence, bit order,
-polarity, and refresh procedure.
+The verified hardware behavior and display-driver sequence are recorded in
+`firmware/docs/HARDWARE.md`. Firmware builds must not depend on archived demo
+files; the active font and display implementation are contained in the
+firmware project.
 
 ## Working with two separate AI development projects
 
@@ -59,10 +59,10 @@ out of public source control, and never put keys in URLs or logs.
 -   Backend: PHP.
 
 The exact display revision and controller must be confirmed using the
-physical hardware markings, board/display revision, and original driver.
-**Do not guess controller commands, RAM addresses, bit order, data
-polarity, or refresh sequence.** The firmware AI must trace these
-details through the original Waveshare code and document its findings.
+physical hardware markings and the verification record in
+`firmware/docs/HARDWARE.md`. **Do not guess controller commands, RAM
+addresses, bit order, data polarity, or refresh sequence.** Keep that record
+consistent with the active firmware implementation.
 
 ## High-level operating sequence
 

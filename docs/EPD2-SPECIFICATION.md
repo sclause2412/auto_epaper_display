@@ -1,7 +1,7 @@
 # EPD2 -- Shared Protocol Specification
 
-**Status:** Draft / must be verified against the original driver and
-physical hardware before implementation\
+**Status:** Verified against the firmware hardware record and physical
+hardware, with remaining panel tests documented there.\
 **Purpose:** Binding interface definition shared by the PHP backend and
 ESP32 firmware.
 
@@ -81,7 +81,7 @@ The logical encoding for each pixel is:
 
 This table describes the **logical** EPD2 encoding.
 Electrical/controller bit polarity must be verified separately against
-the original driver.
+the firmware hardware record and physical panel.
 
 A pixel must never be set in both planes at the same time. If a source
 color cannot be mapped unambiguously, the backend must apply a
@@ -201,13 +201,13 @@ The firmware must:
     RAM write function;
 -   treat premature connection termination or an incorrect length as a
     failed transfer;
--   update the locally stored hash only after the complete download,
+-   update the volatile RTC-RAM hash cache only after the complete download,
     data transfer, and display refresh have succeeded.
 
-The exact way the display driver accepts data in chunks must be derived
-from the original Waveshare code. If the existing API only accepts a
-complete framebuffer, implement a streaming interface at the appropriate
-low-level driver layer.
+The exact way the display driver accepts data in chunks must follow the
+verified implementation documented in `firmware/docs/HARDWARE.md`. If the
+existing API only accepts a complete framebuffer, implement a streaming
+interface at the appropriate low-level driver layer.
 
 ## 8. Error cases
 
@@ -219,8 +219,8 @@ low-level driver layer.
 -   Unchanged hash: no image transfer and no refresh.
 -   Image length not exactly 96,000 bytes: treat as an error.
 -   Network interruption during transfer: do not mark as successful; do
-    not update the stored hash.
--   Controller/refresh error: do not store the hash as successfully
+    not update the volatile hash cache.
+-   Controller/refresh error: do not cache the hash as successfully
     displayed.
 -   Missing or invalid server image: backend must return an error status
     and must not publish false metadata.
