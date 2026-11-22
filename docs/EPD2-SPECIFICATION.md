@@ -89,7 +89,25 @@ deterministic mapping.
 
 ## 5. HTTP interface
 
-### 5.1 Metadata
+### 5.1 Authentication
+
+Both display endpoints require a shared API key in the HTTP request
+header:
+
+    X-API-Key: <configured-api-key>
+
+The backend must compare the supplied value with its configured key
+using a timing-safe comparison. A missing or invalid key returns
+`403 Forbidden` with a JSON error response. Authentication is required
+before processing `If-None-Match`; a matching ETag does not bypass the
+key check.
+
+Clients must not put the key in a URL or logs. Deployments should use
+HTTPS with server-certificate validation and keep production keys out
+of public source control. The example uses one shared key, not
+per-device credentials or a key-rotation protocol.
+
+### 5.2 Metadata
 
 `GET /api/display/current`
 
@@ -119,7 +137,7 @@ Fields:
 
 The hash must be returned as a 64-character hexadecimal SHA-256 value.
 
-### 5.2 Binary image
+### 5.3 Binary image
 
 `GET /api/display/image`
 
@@ -135,7 +153,7 @@ the server may return `304 Not Modified` with no body. The firmware must
 not rely on ETag alone; the metadata hash remains the primary comparison
 mechanism.
 
-### 5.3 Metadata/image consistency
+### 5.4 Metadata/image consistency
 
 The server must ensure that the metadata hash and the delivered image
 file belong to the same version. During publication, there must never be
@@ -195,6 +213,8 @@ low-level driver layer.
 
 -   Metadata endpoint unreachable: do not update the hash; retry on a
     later wake cycle.
+-   Missing or invalid API key: server returns `403 Forbidden`; do not
+    update the hash or attempt the image transfer.
 -   Invalid JSON or unexpected format: abort.
 -   Unchanged hash: no image transfer and no refresh.
 -   Image length not exactly 96,000 bytes: treat as an error.

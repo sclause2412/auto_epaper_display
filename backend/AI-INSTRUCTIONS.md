@@ -17,9 +17,9 @@ first explain why and propose a coordinated specification change.
 
 ## Goal
 
-The backend accepts a source image (or uses the source image already
-defined by the project), converts it into an 800 × 480 display image
-using black, white, and red, and serves it over HTTP.
+The current example generates a daily weekday/date image, converts it
+into the EPD2 format, and serves it over HTTP. It has no upload or
+generation endpoint.
 
 The firmware should download the image only when its SHA-256 hash has
 changed.
@@ -48,21 +48,16 @@ hardware-verified until tests prove that.
 
 ## Image processing
 
-Use an appropriate PHP library, preferably GD or Imagick, depending on
-the available runtime environment.
+Use GD to create the daily weekday/date PNG with its built-in font and
+convert it into EPD2. There is no user-provided image or upload endpoint.
 
 Requirements:
 
-1.  Load source images safely and reject invalid files.
-2.  Resize to 800 × 480 and crop appropriately (cover behavior), unless
-    the project already specifies another image-fitting rule.
-3.  Preserve aspect ratio; do not introduce unintended distortion.
-4.  Composite transparency onto a documented background (white by
-    default).
-5.  Quantize colors deterministically to black, white, or red.
-6.  Make dithering optional only if it is configurable and documented.
-7.  Ensure no pixel is set in both planes at the same time.
-8.  Validate the output is exactly 96,000 bytes and that both planes are
+1.  Generate the example PNG at exactly 800 × 480 pixels.
+2.  Quantize colors deterministically to black, white, or red.
+3.  Make dithering optional only if it is configurable and documented.
+4.  Ensure no pixel is set in both planes at the same time.
+5.  Validate the output is exactly 96,000 bytes and that both planes are
     valid before publication.
 
 Keep image processing maintainable and separate from HTTP controllers
@@ -73,6 +68,9 @@ and filesystem access.
 Implement the endpoints defined in the shared specification:
 
 ### `GET /api/display/current`
+
+Require the configured API key in the `X-API-Key` request header.
+Requests with a missing or invalid key return `403 Forbidden`.
 
 Return JSON metadata containing:
 
@@ -88,6 +86,9 @@ exact binary body returned by the image endpoint.
 
 ### `GET /api/display/image`
 
+Require the configured API key in the `X-API-Key` request header.
+Requests with a missing or invalid key return `403 Forbidden`.
+
 Return only the 96,000 binary bytes as `application/octet-stream`. No
 JSON and no additional file header.
 
@@ -95,62 +96,41 @@ Support `ETag` and `If-None-Match` if practical, according to the
 specification. If the ETag matches, the endpoint may return
 `304 Not Modified`.
 
-## Atomic publication and consistency
+## Example image cache
 
-Never publish a hash that does not correspond to the fully written image
-file.
-
-Recommended process:
-
-1.  Write the new image data completely to a temporary file on the same
-    filesystem.
-2.  Validate its length and content.
-3.  Calculate SHA-256 over the temporary file.
-4.  Use a versioned image file or another consistent publication
-    mechanism.
-5.  Atomically update the active manifest with hash, size, format, and
-    image path.
-6.  Remove temporary files on failure.
-
-Account for concurrent requests. A metadata request followed shortly by
-an image request must resolve to a consistent version. Use versioned
-image files, immutable filenames, or appropriate locking if needed.
-Simply replacing two independent files without a consistency strategy is
-insufficient.
+The example stores the generated PNG, EPD file, and a date marker under
+`storage/`. Reuse them while the date marker matches the current date
+and the EPD file is exactly 96,000 bytes. Generate temporary files in
+the same directory and replace the cache files only after successful
+generation. The metadata endpoint calculates SHA-256 from the cached
+EPD file. Do not add a manifest or lock unless the project requirements
+grow beyond this example.
 
 ## Security and robustness
 
--   Validate input files; file extensions alone are not sufficient.
--   Limit upload size and allowed MIME/image formats.
 -   Never use unchecked filenames as filesystem paths.
 -   Do not write credentials or secret configuration values into
     responses or logs.
+-   Require the configured API key in `X-API-Key` for both display API
+    endpoints. Compare keys with `hash_equals`; return `403` for missing
+    or invalid keys. Never accept the key in a URL.
+-   Use HTTPS in public deployments. Replace the example key and keep
+    the production configuration out of public source control.
 -   Return appropriate HTTP status codes for errors.
 -   Do not emit PHP warnings/notices into binary responses.
 -   The binary endpoint must be free of debug output, BOM, and extra
     whitespace.
--   Manage paths and permissions through configuration; do not hardcode
-    secrets.
+-   Manage paths and permissions through configuration. The example key
+    may be in `config.php`; use private deployment configuration for
+    production.
 
-## Tests
+## Verification
 
-Write automated tests where the existing project structure allows. At
-minimum, verify:
-
--   output dimensions and plane lengths;
--   total length is exactly 96,000 bytes;
--   SHA-256 matches the actual binary response body;
--   all-white, all-black, and all-red test images produce the expected
-    planes;
--   no pixel is encoded in both planes;
--   ETag / `If-None-Match` behavior;
--   metadata and binary image remain consistent during updates;
--   invalid source files are rejected;
--   a failure during image generation does not overwrite the last valid
-    version.
-
-Create fixtures for all-white, all-black, all-red, color quadrants,
-corner pixels, and stripes.
+This example intentionally has no automated test suite. For changes to
+the protocol or image conversion, verify endpoint authentication,
+metadata, exact image length, SHA-256, ETag behavior, and color/bit
+encoding manually. Hardware-dependent encoding still requires tests
+against the original driver and physical display.
 
 ## Documentation and deliverables
 
@@ -158,10 +138,9 @@ Create or update:
 
 -   installation and runtime requirements;
 -   configuration and required PHP extensions;
--   API documentation with example responses;
+-   API documentation including `X-API-Key` authentication;
 -   image processing and quantization method;
--   test and deployment instructions;
--   description of the atomic publication mechanism.
+-   deployment instructions, including HTTPS and secret-key handling.
 
 ## Working rules
 
@@ -173,7 +152,7 @@ Create or update:
 -   Do not modify the ESP32 firmware.
 -   Do not change the shared EPD2 specification without proposing the
     change first.
--   Run tests and report honestly which tests were actually executed.
+-   Perform manual verification and report honestly what was checked.
 -   If a requirement cannot be implemented because a PHP extension or
     infrastructure component is missing, identify the exact blocker and
     suggest an appropriate alternative.
@@ -187,5 +166,5 @@ After implementation, list:
 3.  image processing method used;
 4.  how bit packing and polarity are handled, and what still requires
     hardware verification;
-5.  tests executed and their results;
+5.  verification performed and its results;
 6.  outstanding items and required deployment steps.

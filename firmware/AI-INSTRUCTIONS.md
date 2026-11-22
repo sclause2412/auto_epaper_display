@@ -194,6 +194,9 @@ setup immediately.
 After successfully connecting to Wi-Fi:
 
 1.  Request `GET /api/display/current` over HTTP.
+    Include the configured API key as an `X-API-Key` header. Keep the
+    key in local/private firmware configuration; never put it in a URL,
+    log it, or commit a production key to public source control.
 2.  Validate the JSON: `width=800`, `height=480`, `format=EPD2`,
     `size=96000`.
 3.  Compare the server hash with the locally persisted hash of the last
@@ -238,6 +241,11 @@ low-power schedule rather than retrying indefinitely.
 ## Network and HTTP robustness
 
 -   Set connection and read timeouts.
+-   Send the configured `X-API-Key` header with both display API
+    requests. Use HTTPS and validate the server certificate for public
+    deployments; do not silently downgrade to HTTP. Treat `403 Forbidden`
+    as an authentication/configuration error; do not download, refresh,
+    or update the saved image hash.
 -   Validate HTTP status codes and Content-Length where available.
 -   Correctly handle chunked transfer encoding if the server uses it;
     preferably the server should provide a known Content-Length of
@@ -245,6 +253,9 @@ low-power schedule rather than retrying indefinitely.
 -   Abort if fewer or more than 96,000 image bytes are received.
 -   Never mark partially received data as a valid image.
 -   Do not log passwords, Wi-Fi PSKs, or other secrets.
+-   Do not log or expose the API key. Never send it in URL query
+    parameters. Use HTTPS with server-certificate validation for public
+    deployments.
 -   Avoid unnecessary heap allocations during image transfer.
 
 ## Power-saving requirements
@@ -296,6 +307,7 @@ images listed in the EPD2 specification on real hardware.
 -   Do not change the EPD2 specification independently.
 -   Never allocate full image buffers.
 -   Never hardcode Wi-Fi credentials.
+-   Never commit a production API key in public firmware source.
 -   Run available builds and tests and report honestly when hardware
     tests could not be performed.
 -   Document every hardware-dependent assumption and every remaining

@@ -22,6 +22,12 @@ The image processor maps pixels deterministically to black, white, and red. Each
 - `GET /api/display/current` returns `{ "hash", "width", "height", "format", "size", "url" }`
 - `GET /api/display/image` returns exactly 96,000 bytes with `application/octet-stream`
 
+Both endpoints require the `X-API-Key` HTTP header. The development key is configured in `config.php`; replace it before deployment. If the source repository is public, keep the production configuration private. Requests without a valid key receive `403 Forbidden`. Use HTTPS and do not send the key in a URL or write it to logs.
+
+```sh
+curl -H 'X-API-Key: YOUR_CONFIGURED_KEY' https://example.invalid/api/display/current
+```
+
 There is no upload or image-generation API.
 
 The image endpoint supports `ETag` and `If-None-Match`. Metadata calculates the SHA-256 directly from the cached EPD file.

@@ -22,6 +22,20 @@ function sendJson($data, int $status = 200): void
     exit;
 }
 
+function requireApiKey(array $config): void
+{
+    $expected = $config['api_key'] ?? '';
+    $provided = $_SERVER['HTTP_X_API_KEY'] ?? $_GET['API_KEY'] ?? '';
+    if (
+        !is_string($expected)
+        || $expected === ''
+        || !is_string($provided)
+        || !hash_equals($expected, $provided)
+    ) {
+        sendJson(['error' => 'Forbidden'], 403);
+    }
+}
+
 function drawCenteredText(\GdImage $image, string $text, int $color, int $scale, int $centerY): void
 {
     $font = 5;
@@ -153,6 +167,7 @@ if ($path === false || $path === null) {
 switch ($method) {
     case 'GET':
         if ($path === '/api/display/current') {
+            requireApiKey($config);
             $image = openCurrentImage($processor, $config);
             fclose($image['stream']);
             sendJson([
@@ -166,6 +181,7 @@ switch ($method) {
         }
 
         if ($path === '/api/display/image') {
+            requireApiKey($config);
             $image = openCurrentImage($processor, $config);
             $etag = '"' . $image['hash'] . '"';
             $matches = false;

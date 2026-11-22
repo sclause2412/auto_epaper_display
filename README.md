@@ -46,6 +46,10 @@ read its local `AI-INSTRUCTIONS.md` and the shared specification.
 HTTP interface. Proposed changes must first be discussed and
 incorporated into the shared specification.
 
+Both display API endpoints require the configured shared key in the
+`X-API-Key` HTTP header. Use HTTPS for deployment, keep production keys
+out of public source control, and never put keys in URLs or logs.
+
 ## Hardware and driver notes
 
 -   Display: Waveshare 7.5inch E-Paper (B), presumably V2, 800 × 480
@@ -97,8 +101,8 @@ state and reinitialize it if necessary.
 ## Definition of done
 
 -   Backend and firmware use exactly the same EPD2 specification.
--   The server publishes the image file and hash atomically and
-    consistently.
+-   The server requires API-key authentication and returns metadata
+    whose SHA-256 corresponds to the EPD2 image body.
 -   Firmware streams image data without a full framebuffer.
 -   An unchanged hash causes no image transfer and no unnecessary
     refresh.
