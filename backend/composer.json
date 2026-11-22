@@ -1,0 +1,8 @@
+{
+    "name": "smartdisplay/epd2-backend",
+    "description": "EPD2 image backend",
+    "require": {
+        "php": ">=8.3",
+        "ext-gd": "*"
+    }
+}
