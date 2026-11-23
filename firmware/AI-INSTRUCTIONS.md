@@ -81,10 +81,14 @@ Wi-Fi credentials must not be hardcoded in source code.
 
 1.  Check whether saved Wi-Fi credentials exist.
 2.  If no credentials are saved: enter setup mode immediately. Do not
-    wait five minutes.
-3.  If credentials exist: attempt to connect for a maximum of 5 minutes.
-4.  If a connection cannot be established within 5 minutes: enter setup
-    mode.
+    wait for the Wi-Fi connection timeout.
+3.  If credentials exist: each retrieval attempt first tries to connect for
+    at most 30 seconds, then makes one image request if connected.
+4.  Any connection or image-retrieval failure counts as one failed attempt.
+    Retry after one minute for the first four failures. After the fifth,
+    display the common error and retry after one hour, then start a new
+    five-attempt cycle. Do not refresh the display while that same error is
+    already shown.
 5.  If a connection attempt fails, retain the previously saved
     credentials initially. Replace them only after new credentials have
     been configured and a connection using them succeeds.
@@ -189,14 +193,18 @@ Suggested states:
 Constants:
 
 ``` cpp
-constexpr uint32_t WIFI_TIMEOUT_MS  = 5UL * 60UL * 1000UL;
-constexpr uint32_t SETUP_TIMEOUT_MS = 10UL * 60UL * 1000UL;
-constexpr uint64_t UPDATE_INTERVAL_US = 60ULL * 60ULL * 1000000ULL;
+constexpr uint32_t WIFI_TIMEOUT_SECONDS = 30;
+constexpr uint32_t SETUP_TIMEOUT_SECONDS = 10 * 60;
+constexpr uint32_t UPDATE_INTERVAL_SECONDS = 60 * 60;
 ```
 
-The five-minute timeout applies only when attempting to connect with
+The 30-second timeout applies only when attempting to connect with
 credentials that are already saved. If no credentials are saved, enter
-setup immediately.
+setup immediately. Each retrieval attempt gets at most 30 seconds to
+connect to Wi-Fi and then makes one image request. Any failure counts
+equally: retry after one minute for the first four failures; after the
+fifth, show the common error, wait one hour, and start a new five-attempt
+cycle.
 
 ## Normal operation and image updates
 
@@ -232,16 +240,21 @@ After successfully connecting to Wi-Fi:
 6.  Disable Wi-Fi and any peripherals that are no longer needed.
 7.  Put the ESP32 into deep sleep for one hour.
 
-If the hash is unchanged, the device can go directly to deep sleep after
-the hash check. No full image transfer is needed.
+If the hash is unchanged and no retry error is displayed, the device can
+go directly to deep sleep after the hash check. No full image transfer is
+needed.
 
-On an unreachable image server, HTTP 404, or server error, retry the
-metadata/image request every minute, up to five attempts. After the fifth
-failure, display an error and continue the normal one-hour deep-sleep
-cycle. A `403 Forbidden` is not retried minutely; display the API-key
-error immediately and continue the hourly cycle. On invalid metadata,
-incorrect length, interrupted stream, or refresh failure, do not update
-the RTC-RAM hash cache or report success.
+Every retrieval attempt first connects to Wi-Fi for up to 30 seconds and,
+if connected, makes one metadata/image request. A connection failure,
+HTTP error (including `403` and `404`), invalid metadata or image, transfer
+failure, or display refresh failure all count as one failed attempt. Retry
+after one minute for the first four failures. After the fifth, display the
+common error and sleep for one hour, regardless of the configured update
+interval, then start a new five-attempt cycle. Show the next retry time in
+UTC when system time is synchronized; otherwise show that time was not
+loaded. Do not refresh the display if the common error is already shown.
+On invalid metadata, incorrect length, interrupted stream, or refresh
+failure, do not update the RTC-RAM hash cache or report success.
 
 ## Deep sleep and retaining the visible image
 
@@ -299,9 +312,14 @@ Create build and test instructions and verify at least:
 5.  Premature HTTP termination is detected.
 6.  Incorrect Content-Length is detected.
 7.  The volatile RTC-RAM hash cache is updated only after a successful refresh.
-8.  Unchanged hash causes no transfer and no refresh.
+8.  Unchanged hash causes no transfer or refresh unless a retry error
+    message replaced the image; in that case, restore the image even when
+    its hash is unchanged.
 9.  Missing saved Wi-Fi credentials lead directly to setup mode.
-10. Saved Wi-Fi credentials get at most five minutes to connect.
+10. Each attempt gets at most 30 seconds to connect, then makes one image
+    request if connected. All failure types count equally: retry after one
+    minute for the first four, then display the common error and retry after
+    one hour. Do not refresh an already displayed error.
 11. AP SSID follows the `DISPLAY_####` format.
 12. AP password contains exactly eight digits.
 13. Setup portal is reachable at `192.168.4.1`.
@@ -310,12 +328,15 @@ Create build and test instructions and verify at least:
 15. No automatic restart occurs after setup timeout.
 16. Holding BOOT for five seconds during the startup screen enters setup
     without erasing settings; the portal reset action clears them.
-17. A `403 Forbidden` from either image endpoint displays a clear API-key
-    error on the e-paper and does not update the cached hash.
+17. A `403 Forbidden`, like any other retrieval failure, counts toward the
+    same five-attempt limit and does not update the cached hash.
 18. Non-deep-sleep startup displays SSID and URL, but never the API key, for
     one minute before the first image request.
-19. Unreachable server, 404, and server errors retry every minute for five
-    attempts, then display an error and use the one-hour sleep interval.
+19. Wi-Fi failures, HTTP errors, invalid data, transfer failures, and
+    display refresh failures all count as retrieval failures: retry after
+    one minute for the first four, then display one common error and wait
+    one hour, regardless of the configured update interval. Start a new
+    five-attempt cycle after that hour.
 
 Test display orientation, bit order, and color mapping with the test
 images listed in the EPD2 specification on real hardware.

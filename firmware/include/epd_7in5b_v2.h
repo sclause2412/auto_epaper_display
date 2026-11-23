@@ -15,10 +15,10 @@ public:
   void showSetupMessage(const char *ssid, const char *password) override;
   void showTimeoutMessage() override;
   void showApiKeyErrorMessage() override;
-  void showServerUnavailableMessage() override;
+  void showServerUnavailableMessage(const char *retryMessage) override;
 
 private:
-  static constexpr uint32_t BUSY_TIMEOUT_MS = 60000;
+  static constexpr uint32_t BUSY_TIMEOUT_SECONDS = 60;
 
   size_t nextBlackOffset_ = 0;
   size_t nextRedOffset_ = 0;

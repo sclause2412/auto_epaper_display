@@ -19,27 +19,35 @@
 #include "epd_7in5b_v2.h"
 #include "serial_log.h"
 
-constexpr uint32_t WIFI_TIMEOUT_MS = 5UL * 60UL * 1000UL;
-constexpr uint32_t SETUP_TIMEOUT_MS = 10UL * 60UL * 1000UL;
-constexpr uint32_t DEFAULT_UPDATE_INTERVAL_MINUTES = 60;
-constexpr uint32_t MIN_UPDATE_INTERVAL_MINUTES = 1;
-constexpr uint32_t MAX_UPDATE_INTERVAL_MINUTES = 24 * 60;
+constexpr uint32_t WIFI_TIMEOUT_SECONDS = 30;
+constexpr uint32_t SETUP_TIMEOUT_SECONDS = 10 * 60;
+constexpr uint32_t DEFAULT_UPDATE_INTERVAL_SECONDS = 60 * 60;
+constexpr uint32_t MIN_UPDATE_INTERVAL_SECONDS = 60;
+constexpr uint32_t MAX_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
+constexpr uint32_t RETRIEVAL_RETRY_DELAY_SECONDS = 60;
+constexpr uint32_t FAILURE_BACKOFF_SECONDS = 60 * 60;
+constexpr uint32_t SECONDS_PER_MINUTE = 60;
 constexpr size_t SETUP_PASSWORD_DIGITS = 8;
-constexpr uint32_t TEST_WIFI_TIMEOUT_MS = 18000;
-constexpr uint32_t TEST_TIME_SYNC_TIMEOUT_MS = 12000;
-constexpr uint32_t TEST_HTTP_TIMEOUT_MS = 15000;
-constexpr uint32_t TEST_TOTAL_BUDGET_MS =
-    TEST_WIFI_TIMEOUT_MS + TEST_TIME_SYNC_TIMEOUT_MS + TEST_HTTP_TIMEOUT_MS;
+constexpr uint32_t TEST_WIFI_TIMEOUT_SECONDS = 18;
+constexpr uint32_t TEST_TIME_SYNC_TIMEOUT_SECONDS = 12;
+constexpr uint32_t TEST_HTTP_TIMEOUT_SECONDS = 15;
+constexpr uint32_t TEST_TOTAL_BUDGET_SECONDS =
+    TEST_WIFI_TIMEOUT_SECONDS + TEST_TIME_SYNC_TIMEOUT_SECONDS +
+    TEST_HTTP_TIMEOUT_SECONDS;
 constexpr uint8_t BOOT_BUTTON_GPIO = 0;
 constexpr uint8_t STATUS_LED_GPIO = 2;
-constexpr uint32_t SETUP_BUTTON_HOLD_MS = 5000;
-constexpr uint32_t STARTUP_SETTINGS_DISPLAY_MS = 60UL * 1000UL;
-constexpr uint32_t SETUP_LED_BLINK_INTERVAL_MS = 100;
-constexpr uint32_t SERVER_RETRY_DELAY_MS = 60UL * 1000UL;
-constexpr uint8_t MAX_SERVER_ATTEMPTS = 5;
+constexpr uint32_t SETUP_BUTTON_HOLD_SECONDS = 5;
+constexpr uint32_t STARTUP_SETTINGS_DISPLAY_SECONDS = 60;
+constexpr float SETUP_LED_BLINK_INTERVAL_SECONDS = 0.1f;
+constexpr uint8_t MAX_RETRIEVAL_ATTEMPTS = 5;
 constexpr size_t MAX_API_BASE_URL_LENGTH = 256;
 constexpr size_t MAX_API_KEY_LENGTH = 256;
 constexpr size_t MAX_METADATA_LENGTH = 2048;
+
+constexpr uint32_t millisecondsFromSeconds(uint32_t seconds)
+{
+  return seconds * 1000UL;
+}
 
 enum class State : uint8_t
 {
@@ -56,7 +64,8 @@ Epd7in5bV2 display;
 
 State state = State::WifiConnecting;
 uint32_t stateStartedMs = 0;
-uint32_t updateIntervalMinutes = DEFAULT_UPDATE_INTERVAL_MINUTES;
+uint32_t updateIntervalMinutes =
+    DEFAULT_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE;
 bool hardwareAvailable = false;
 bool statusLedEnabled = true;
 String setupSsid;
@@ -65,11 +74,14 @@ String testedWifiSsid;
 String testedWifiPassword;
 String testedApiBaseUrl;
 String testedApiKey;
-uint32_t testedUpdateIntervalMinutes = DEFAULT_UPDATE_INTERVAL_MINUTES;
+uint32_t testedUpdateIntervalMinutes =
+    DEFAULT_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE;
 bool testedStatusLedEnabled = true;
 int64_t testedContentId = 0;
 String successfulTestToken;
 RTC_DATA_ATTR char lastDisplayedImageHash[65];
+RTC_DATA_ATTR uint8_t consecutiveRetrievalFailures = 0;
+RTC_DATA_ATTR bool retryErrorDisplayed = false;
 
 struct MetadataResponse
 {
@@ -358,8 +370,8 @@ static bool parseUpdateIntervalMinutes(const String &value, uint32_t &minutes)
   }
 
   const unsigned long parsed = strtoul(value.c_str(), nullptr, 10);
-  if (parsed < MIN_UPDATE_INTERVAL_MINUTES ||
-      parsed > MAX_UPDATE_INTERVAL_MINUTES)
+  if (parsed < MIN_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE ||
+      parsed > MAX_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE)
   {
     return false;
   }
@@ -415,7 +427,7 @@ static String metadataRequestBody(const DisplaySettings &settings)
          "&colors=" + settings.colors;
 }
 
-static bool waitForSetupButton(uint32_t windowMs)
+static bool waitForSetupButton(uint32_t windowSeconds)
 {
   pinMode(BOOT_BUTTON_GPIO, INPUT_PULLUP);
   digitalWrite(STATUS_LED_GPIO, LOW);
@@ -424,7 +436,7 @@ static bool waitForSetupButton(uint32_t windowMs)
   uint32_t buttonPressedAt = 0;
   uint32_t nextLedToggleAt = millis();
   const uint32_t started = millis();
-  while (millis() - started < windowMs)
+  while (millis() - started < millisecondsFromSeconds(windowSeconds))
   {
     const uint32_t now = millis();
     if (digitalRead(BOOT_BUTTON_GPIO) == LOW)
@@ -435,12 +447,14 @@ static bool waitForSetupButton(uint32_t windowMs)
         buttonPressedAt = now;
         nextLedToggleAt = now;
       }
-      else if (now - buttonPressedAt >= SETUP_BUTTON_HOLD_MS)
+      else if (now - buttonPressedAt >=
+               millisecondsFromSeconds(SETUP_BUTTON_HOLD_SECONDS))
       {
         digitalWrite(STATUS_LED_GPIO, LOW);
         return true;
       }
-      if (now - nextLedToggleAt >= SETUP_LED_BLINK_INTERVAL_MS)
+      if (now - nextLedToggleAt >= static_cast<uint32_t>(
+                                       SETUP_LED_BLINK_INTERVAL_SECONDS * 1000))
       {
         ledOn = !ledOn;
         digitalWrite(STATUS_LED_GPIO, ledOn ? HIGH : LOW);
@@ -516,6 +530,8 @@ static void prepareImageHashCache()
   if (esp_reset_reason() != ESP_RST_DEEPSLEEP)
   {
     memset(lastDisplayedImageHash, 0, sizeof(lastDisplayedImageHash));
+    consecutiveRetrievalFailures = 0;
+    retryErrorDisplayed = false;
     return;
   }
 
@@ -564,8 +580,10 @@ static void handlePortalSettings()
   const uint32_t updateMinutes = configured
                                      ? preferences.getUInt(
                                            "update_minutes",
-                                           DEFAULT_UPDATE_INTERVAL_MINUTES)
-                                     : DEFAULT_UPDATE_INTERVAL_MINUTES;
+                                           DEFAULT_UPDATE_INTERVAL_SECONDS /
+                                               SECONDS_PER_MINUTE)
+                                     : DEFAULT_UPDATE_INTERVAL_SECONDS /
+                                           SECONDS_PER_MINUTE;
   const bool useStatusLed = configured
                                 ? preferences.getBool("status_led", true)
                                 : true;
@@ -707,13 +725,48 @@ static bool waitForSystemTime()
 {
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   const uint32_t started = millis();
-  while (millis() - started < TEST_TIME_SYNC_TIMEOUT_MS)
+  while (millis() - started <
+         millisecondsFromSeconds(TEST_TIME_SYNC_TIMEOUT_SECONDS))
   {
     if (time(nullptr) >= 1735689600)
       return true;
     delay(250);
   }
   return false;
+}
+
+static bool formatServerRetryTime(char *buffer, size_t bufferSize)
+{
+  const time_t currentTime = time(nullptr);
+  if (currentTime < 1735689600)
+    return false;
+
+  const time_t retryTime =
+      currentTime + static_cast<time_t>(FAILURE_BACKOFF_SECONDS);
+  struct tm retryUtc{};
+  if (gmtime_r(&retryTime, &retryUtc) == nullptr)
+    return false;
+
+  const int written = snprintf(
+      buffer, bufferSize, "Retry: %04d-%02d-%02d %02d:%02d UTC",
+      retryUtc.tm_year + 1900, retryUtc.tm_mon + 1, retryUtc.tm_mday,
+      retryUtc.tm_hour, retryUtc.tm_min);
+  return written > 0 && static_cast<size_t>(written) < bufferSize;
+}
+
+static void showRetryErrorMessage()
+{
+  if (!retryErrorDisplayed)
+  {
+    char retryTime[40];
+    const char *retryMessage =
+        formatServerRetryTime(retryTime, sizeof(retryTime))
+            ? retryTime
+            : "Time not loaded.";
+    if (hardwareAvailable)
+      display.showServerUnavailableMessage(retryMessage);
+    retryErrorDisplayed = true;
+  }
 }
 
 static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
@@ -732,7 +785,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
   esp_http_client_config_t config{};
   config.url = endpoint.c_str();
   config.method = HTTP_METHOD_POST;
-  config.timeout_ms = TEST_HTTP_TIMEOUT_MS;
+  config.timeout_ms = millisecondsFromSeconds(TEST_HTTP_TIMEOUT_SECONDS);
   config.disable_auto_redirect = true;
   config.crt_bundle_attach = esp_crt_bundle_attach;
 
@@ -907,7 +960,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
   esp_http_client_config_t config{};
   config.url = endpoint.c_str();
   config.method = HTTP_METHOD_POST;
-  config.timeout_ms = TEST_HTTP_TIMEOUT_MS;
+  config.timeout_ms = millisecondsFromSeconds(TEST_HTTP_TIMEOUT_SECONDS);
   config.disable_auto_redirect = true;
   config.crt_bundle_attach = esp_crt_bundle_attach;
 
@@ -1143,7 +1196,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
   return true;
 }
 
-static void sleepUntilNextUpdate()
+static void sleepForSeconds(uint32_t seconds)
 {
   SerialLog::info("Preparing display and Wi-Fi for deep sleep.");
   WiFi.disconnect(true);
@@ -1155,11 +1208,39 @@ static void sleepUntilNextUpdate()
   setStatusLed(false);
   state = State::Shutdown;
   const uint64_t updateIntervalUs =
-      static_cast<uint64_t>(updateIntervalMinutes) * 60ULL * 1000000ULL;
-  SerialLog::infof("Entering deep sleep for %lu minute(s).",
-                   static_cast<unsigned long>(updateIntervalMinutes));
+      static_cast<uint64_t>(seconds) * 1000000ULL;
+  SerialLog::infof("Entering deep sleep for %lu second(s).",
+                   static_cast<unsigned long>(seconds));
   esp_sleep_enable_timer_wakeup(updateIntervalUs);
   esp_deep_sleep_start();
+}
+
+static void sleepUntilNextUpdate()
+{
+  sleepForSeconds(updateIntervalMinutes * SECONDS_PER_MINUTE);
+}
+
+static void scheduleRetrievalRetry(const String &failureReason)
+{
+  const char *message = failureReason.length() == 0
+                            ? "Image retrieval failed."
+                            : failureReason.c_str();
+  SerialLog::error(message);
+  if (consecutiveRetrievalFailures < MAX_RETRIEVAL_ATTEMPTS)
+    ++consecutiveRetrievalFailures;
+
+  if (consecutiveRetrievalFailures < MAX_RETRIEVAL_ATTEMPTS)
+  {
+    SerialLog::warnf("Image retrieval attempt %u/%u failed; retrying in one minute.",
+                     static_cast<unsigned>(consecutiveRetrievalFailures),
+                     static_cast<unsigned>(MAX_RETRIEVAL_ATTEMPTS));
+    sleepForSeconds(RETRIEVAL_RETRY_DELAY_SECONDS);
+    return;
+  }
+
+  showRetryErrorMessage();
+  consecutiveRetrievalFailures = 0;
+  sleepForSeconds(FAILURE_BACKOFF_SECONDS);
 }
 
 static void runNormalOperation()
@@ -1187,100 +1268,52 @@ static void runNormalOperation()
 
   if (failureReason.length() > 0)
   {
-    SerialLog::error(failureReason.c_str());
+    scheduleRetrievalRetry(failureReason);
+    return;
+  }
+
+  if (apiBaseUrl.startsWith("https://") && !waitForSystemTime())
+  {
+    failureReason = "Could not verify the server certificate because time sync failed.";
+    scheduleRetrievalRetry(failureReason);
+    return;
+  }
+
+  ServerFailure failure = ServerFailure::None;
+  ImageMetadata imageMetadata;
+  if (!fetchCurrentImageMetadata(apiBaseUrl, apiKey, settings,
+                                 imageMetadata, failureReason, &failure))
+  {
+    scheduleRetrievalRetry(failureReason);
+    return;
+  }
+
+  if (imageMetadata.hash == String(lastDisplayedImageHash) &&
+      !retryErrorDisplayed)
+  {
+    SerialLog::info("EPD2 image is unchanged; display refresh skipped.");
+    consecutiveRetrievalFailures = 0;
     sleepUntilNextUpdate();
     return;
   }
 
-  bool reinitializeDisplay = false;
-  for (uint8_t attempt = 1; attempt <= MAX_SERVER_ATTEMPTS; ++attempt)
+  if (!hardwareAvailable)
   {
-    if (reinitializeDisplay)
-    {
-      if (!hardwareAvailable || !display.begin())
-      {
-        failureReason = "Could not reinitialize the display before retrying.";
-        SerialLog::error(failureReason.c_str());
-        break;
-      }
-      SerialLog::info("Display reinitialized for image retry.");
-      reinitializeDisplay = false;
-    }
-
-    ServerFailure failure = ServerFailure::None;
-    ImageMetadata imageMetadata;
-    if (apiBaseUrl.startsWith("https://") && !waitForSystemTime())
-    {
-      failure = ServerFailure::Unreachable;
-      failureReason = "Could not verify the server certificate because time sync failed.";
-      SerialLog::error(failureReason.c_str());
-    }
-    else if (!fetchCurrentImageMetadata(apiBaseUrl, apiKey, settings,
-                                        imageMetadata, failureReason, &failure) &&
-             failure == ServerFailure::None)
-    {
-      failure = ServerFailure::Other;
-    }
-
-    if (failure == ServerFailure::None &&
-        imageMetadata.hash == String(lastDisplayedImageHash))
-    {
-      SerialLog::info("EPD2 image is unchanged; display refresh skipped.");
-      break;
-    }
-
-    if (failure == ServerFailure::None)
-    {
-      if (!hardwareAvailable)
-      {
-        failure = ServerFailure::Other;
-        failureReason = "E-paper initialization failed; image cannot be displayed.";
-      }
-      else
-      {
-        reinitializeDisplay = true;
-        if (downloadAndDisplayImage(apiBaseUrl, apiKey, settings,
-                                    imageMetadata, failureReason, &failure))
-        {
-          reinitializeDisplay = false;
-          SerialLog::info("New EPD2 image downloaded and displayed successfully.");
-          break;
-        }
-      }
-    }
-
-    if (failure == ServerFailure::ApiKeyRejected)
-    {
-      if (hardwareAvailable)
-        display.showApiKeyErrorMessage();
-      SerialLog::error(failureReason.c_str());
-      break;
-    }
-
-    if (failure == ServerFailure::Unreachable || failure == ServerFailure::NotFound)
-    {
-      if (attempt < MAX_SERVER_ATTEMPTS)
-      {
-        SerialLog::warnf("Image server attempt %u/%u failed; retrying in one minute.",
-                         static_cast<unsigned>(attempt),
-                         static_cast<unsigned>(MAX_SERVER_ATTEMPTS));
-        delay(SERVER_RETRY_DELAY_MS);
-        continue;
-      }
-      failureReason = "Image server unavailable or endpoint returned 404 after five attempts.";
-      if (hardwareAvailable)
-        display.showServerUnavailableMessage();
-      SerialLog::error(failureReason.c_str());
-      break;
-    }
-
-    if (failureReason.length() == 0)
-    {
-      failureReason = "The image server returned invalid image data.";
-    }
-    SerialLog::error(failureReason.c_str());
-    break;
+    failureReason = "E-paper initialization failed; image cannot be displayed.";
+    scheduleRetrievalRetry(failureReason);
+    return;
   }
+
+  if (!downloadAndDisplayImage(apiBaseUrl, apiKey, settings,
+                               imageMetadata, failureReason, &failure))
+  {
+    scheduleRetrievalRetry(failureReason);
+    return;
+  }
+
+  retryErrorDisplayed = false;
+  consecutiveRetrievalFailures = 0;
+  SerialLog::info("New EPD2 image downloaded and displayed successfully.");
   sleepUntilNextUpdate();
 }
 
@@ -1294,8 +1327,8 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
       wifiPassword.length() > 64 || apiKey.length() == 0 ||
       apiKey.length() > MAX_API_KEY_LENGTH || apiKey.indexOf('\r') >= 0 ||
       apiKey.indexOf('\n') >= 0 || !normalizeApiBaseUrl(apiBaseUrl) ||
-      updateMinutes < MIN_UPDATE_INTERVAL_MINUTES ||
-      updateMinutes > MAX_UPDATE_INTERVAL_MINUTES)
+      updateMinutes < MIN_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE ||
+      updateMinutes > MAX_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE)
   {
     failureReason = "Please check the network, server, API key, and update interval fields.";
     SerialLog::error(failureReason.c_str());
@@ -1303,8 +1336,11 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
   }
 
   const uint32_t setupElapsed = millis() - stateStartedMs;
-  if (setupElapsed >= SETUP_TIMEOUT_MS ||
-      SETUP_TIMEOUT_MS - setupElapsed < TEST_TOTAL_BUDGET_MS)
+  const uint32_t setupTimeoutMs =
+      millisecondsFromSeconds(SETUP_TIMEOUT_SECONDS);
+  if (setupElapsed >= setupTimeoutMs ||
+      setupTimeoutMs - setupElapsed <
+          millisecondsFromSeconds(TEST_TOTAL_BUDGET_SECONDS))
   {
     failureReason = "The setup window is almost over. Restart the controller to try again.";
     SerialLog::error(failureReason.c_str());
@@ -1317,7 +1353,8 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
   WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
   const uint32_t wifiStarted = millis();
   while (WiFi.status() != WL_CONNECTED &&
-         millis() - wifiStarted < TEST_WIFI_TIMEOUT_MS)
+         millis() - wifiStarted <
+             millisecondsFromSeconds(TEST_WIFI_TIMEOUT_SECONDS))
   {
     delay(200);
   }
@@ -1470,7 +1507,8 @@ static void handleSave()
       webServer.arg("token") == successfulTestToken &&
       successfulTestToken.length() > 0;
   if (!sameTestedSettings || WiFi.status() != WL_CONNECTED ||
-      millis() - stateStartedMs >= SETUP_TIMEOUT_MS)
+      millis() - stateStartedMs >=
+          millisecondsFromSeconds(SETUP_TIMEOUT_SECONDS))
   {
     successfulTestToken = "";
     sendPortalResult(400, false, "Settings changed or the test expired. Test again.");
@@ -1628,16 +1666,19 @@ void setup()
     String apiUrl = preferences.getString("api_url", "");
     String apiKey = preferences.getString("api_key", "");
     updateIntervalMinutes =
-        preferences.getUInt("update_minutes", DEFAULT_UPDATE_INTERVAL_MINUTES);
+        preferences.getUInt(
+            "update_minutes",
+            DEFAULT_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE);
     statusLedEnabled = preferences.getBool("status_led", true);
     preferences.end();
     setStatusLed(true);
 
-    if (updateIntervalMinutes < MIN_UPDATE_INTERVAL_MINUTES ||
-        updateIntervalMinutes > MAX_UPDATE_INTERVAL_MINUTES)
+    if (updateIntervalMinutes < MIN_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE ||
+        updateIntervalMinutes > MAX_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE)
     {
       SerialLog::error("Saved update interval is invalid; using the 60-minute default.");
-      updateIntervalMinutes = DEFAULT_UPDATE_INTERVAL_MINUTES;
+      updateIntervalMinutes =
+          DEFAULT_UPDATE_INTERVAL_SECONDS / SECONDS_PER_MINUTE;
     }
 
     if (esp_reset_reason() != ESP_RST_DEEPSLEEP)
@@ -1649,7 +1690,7 @@ void setup()
         display.showStartupSettings(ssid.c_str(), apiUrl.c_str(), apiKey.c_str());
       }
       SerialLog::info("Waiting up to one minute for the BOOT setup shortcut.");
-      if (waitForSetupButton(STARTUP_SETTINGS_DISPLAY_MS))
+      if (waitForSetupButton(STARTUP_SETTINGS_DISPLAY_SECONDS))
       {
         SerialLog::info("BOOT held for five seconds; entering setup without erasing settings.");
         enterSetup();
@@ -1674,7 +1715,7 @@ void loop()
     webServer.handleClient();
 
     uint32_t elapsed = millis() - stateStartedMs;
-    if (elapsed >= SETUP_TIMEOUT_MS)
+    if (elapsed >= millisecondsFromSeconds(SETUP_TIMEOUT_SECONDS))
     {
       SerialLog::error("Setup timed out; closing the portal and entering deep sleep.");
       dnsServer.stop();
@@ -1701,11 +1742,14 @@ void loop()
       SerialLog::info("Wi-Fi connected; entering normal operation.");
       state = State::NormalOperation;
     }
-    else if (millis() - stateStartedMs >= WIFI_TIMEOUT_MS)
+    else if (millis() - stateStartedMs >=
+             millisecondsFromSeconds(WIFI_TIMEOUT_SECONDS))
     {
-      SerialLog::errorf("Saved Wi-Fi connection timed out after five minutes (status %d).",
-                        static_cast<int>(WiFi.status()));
-      enterSetup();
+      String failureReason =
+          "Saved Wi-Fi connection failed after 30 seconds (status " +
+          String(static_cast<int>(WiFi.status())) + ").";
+      scheduleRetrievalRetry(failureReason);
+      return;
     }
   }
   else if (state == State::NormalOperation)

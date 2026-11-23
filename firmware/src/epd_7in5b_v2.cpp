@@ -77,7 +77,7 @@ void Epd7in5bV2::sendData(uint8_t data)
 bool Epd7in5bV2::waitUntilIdle()
 {
   const uint32_t started = millis();
-  while (millis() - started < BUSY_TIMEOUT_MS)
+  while (millis() - started < BUSY_TIMEOUT_SECONDS * 1000UL)
   {
     sendCommand(0x71);
     if (digitalRead(PIN_BUSY) == HIGH)
@@ -377,13 +377,14 @@ void Epd7in5bV2::showApiKeyErrorMessage()
   drawTextImage(lines, sizeof(lines) / sizeof(lines[0]), 42, 1);
 }
 
-void Epd7in5bV2::showServerUnavailableMessage()
+void Epd7in5bV2::showServerUnavailableMessage(const char *retryMessage)
 {
   const char *lines[] = {
-      "Image server unavailable or 404.",
-      "Ten attempts failed.",
-      "Next retry in one hour.",
+      "Connection or image request failed.",
+      "5 attempts failed.",
+      retryMessage,
+      "Retry in one hour.",
       "Press EN to reboot.",
   };
-  drawTextImage(lines, sizeof(lines) / sizeof(lines[0]), 42, 3);
+  drawTextImage(lines, sizeof(lines) / sizeof(lines[0]), 42, 4);
 }

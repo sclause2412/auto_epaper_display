@@ -15,5 +15,5 @@ public:
   virtual void showSetupMessage(const char *ssid, const char *password) = 0;
   virtual void showTimeoutMessage() = 0;
   virtual void showApiKeyErrorMessage() = 0;
-  virtual void showServerUnavailableMessage() = 0;
+  virtual void showServerUnavailableMessage(const char *retryMessage) = 0;
 };
