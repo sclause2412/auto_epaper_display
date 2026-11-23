@@ -11,6 +11,7 @@
 #include <esp_system.h>
 #include <mbedtls/sha256.h>
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -19,7 +20,9 @@
 
 constexpr uint32_t WIFI_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t SETUP_TIMEOUT_MS = 10UL * 60UL * 1000UL;
-constexpr uint64_t UPDATE_INTERVAL_US = 60ULL * 60ULL * 1000000ULL;
+constexpr uint32_t DEFAULT_UPDATE_INTERVAL_MINUTES = 60;
+constexpr uint32_t MIN_UPDATE_INTERVAL_MINUTES = 1;
+constexpr uint32_t MAX_UPDATE_INTERVAL_MINUTES = 24 * 60;
 constexpr size_t SETUP_PASSWORD_DIGITS = 8;
 constexpr uint32_t TEST_WIFI_TIMEOUT_MS = 18000;
 constexpr uint32_t TEST_TIME_SYNC_TIMEOUT_MS = 12000;
@@ -32,7 +35,7 @@ constexpr uint32_t FACTORY_RESET_HOLD_MS = 5000;
 constexpr uint32_t STARTUP_SETTINGS_DISPLAY_MS = 60UL * 1000UL;
 constexpr uint32_t RESET_LED_BLINK_INTERVAL_MS = 100;
 constexpr uint32_t SERVER_RETRY_DELAY_MS = 60UL * 1000UL;
-constexpr uint8_t MAX_SERVER_ATTEMPTS = 10;
+constexpr uint8_t MAX_SERVER_ATTEMPTS = 5;
 constexpr size_t MAX_API_BASE_URL_LENGTH = 256;
 constexpr size_t MAX_API_KEY_LENGTH = 256;
 constexpr size_t MAX_METADATA_LENGTH = 2048;
@@ -52,6 +55,7 @@ Epd7in5bV2 display;
 
 State state = State::WifiConnecting;
 uint32_t stateStartedMs = 0;
+uint32_t updateIntervalMinutes = DEFAULT_UPDATE_INTERVAL_MINUTES;
 bool hardwareAvailable = false;
 String setupSsid;
 String setupPassword;
@@ -59,6 +63,7 @@ String testedWifiSsid;
 String testedWifiPassword;
 String testedApiBaseUrl;
 String testedApiKey;
+uint32_t testedUpdateIntervalMinutes = DEFAULT_UPDATE_INTERVAL_MINUTES;
 String successfulTestToken;
 RTC_DATA_ATTR char lastDisplayedImageHash[65];
 
@@ -114,6 +119,10 @@ const char PORTAL_PAGE[] PROGMEM = R"HTML(
     <label for="apiKey">API key</label>
     <input id="apiKey" name="apiKey" type="text" required
            autocomplete="off" value="" maxlength="256">
+    <label for="updateInterval">Time until next update (1 to 1440 minutes)</label>
+    <input id="updateInterval" name="updateInterval" type="number" required
+           min="1" max="1440" step="1" value="60">
+    <p class="hint">Short intervals can significantly increase battery consumption.</p>
     <p id="httpWarning" class="hint" hidden>
       Warning: HTTP sends the API key without encryption. Use HTTPS on
       untrusted networks.
@@ -237,6 +246,26 @@ static bool hasSavedConfiguration()
                           preferences.getString("api_key", "").length() > 0;
   preferences.end();
   return configured;
+}
+
+static bool parseUpdateIntervalMinutes(const String &value, uint32_t &minutes)
+{
+  if (value.length() == 0)
+    return false;
+  for (size_t i = 0; i < value.length(); ++i)
+  {
+    if (value[i] < '0' || value[i] > '9')
+      return false;
+  }
+
+  const unsigned long parsed = strtoul(value.c_str(), nullptr, 10);
+  if (parsed < MIN_UPDATE_INTERVAL_MINUTES ||
+      parsed > MAX_UPDATE_INTERVAL_MINUTES)
+  {
+    return false;
+  }
+  minutes = static_cast<uint32_t>(parsed);
+  return true;
 }
 
 static bool waitForFactoryResetButton(uint32_t windowMs)
@@ -746,7 +775,9 @@ static void sleepUntilNextUpdate()
     Serial.println("E-paper sleep failed before scheduled deep sleep.");
   }
   state = State::Shutdown;
-  esp_sleep_enable_timer_wakeup(UPDATE_INTERVAL_US);
+  const uint64_t updateIntervalUs =
+      static_cast<uint64_t>(updateIntervalMinutes) * 60ULL * 1000000ULL;
+  esp_sleep_enable_timer_wakeup(updateIntervalUs);
   esp_deep_sleep_start();
 }
 
@@ -868,14 +899,17 @@ static void runNormalOperation()
 }
 
 static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseUrl,
-                           String apiKey, String &failureReason)
+                           String apiKey, uint32_t updateMinutes,
+                           String &failureReason)
 {
   if (wifiSsid.length() == 0 || wifiSsid.length() > 32 ||
       wifiPassword.length() > 64 || apiKey.length() == 0 ||
       apiKey.length() > MAX_API_KEY_LENGTH || apiKey.indexOf('\r') >= 0 ||
-      apiKey.indexOf('\n') >= 0 || !normalizeApiBaseUrl(apiBaseUrl))
+      apiKey.indexOf('\n') >= 0 || !normalizeApiBaseUrl(apiBaseUrl) ||
+      updateMinutes < MIN_UPDATE_INTERVAL_MINUTES ||
+      updateMinutes > MAX_UPDATE_INTERVAL_MINUTES)
   {
-    failureReason = "Please check the network, HTTP/HTTPS server URL, and API key fields.";
+    failureReason = "Please check the network, server, API key, and update interval fields.";
     return false;
   }
 
@@ -923,6 +957,7 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
   testedWifiPassword = wifiPassword;
   testedApiBaseUrl = apiBaseUrl;
   testedApiKey = apiKey;
+  testedUpdateIntervalMinutes = updateMinutes;
   char token[17];
   snprintf(token, sizeof(token), "%08lx%08lx",
            static_cast<unsigned long>(esp_random()),
@@ -934,16 +969,25 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
 static void handleTest()
 {
   if (!webServer.hasArg("ssid") || !webServer.hasArg("wifiPassword") ||
-      !webServer.hasArg("apiUrl") || !webServer.hasArg("apiKey"))
+      !webServer.hasArg("apiUrl") || !webServer.hasArg("apiKey") ||
+      !webServer.hasArg("updateInterval"))
   {
     sendPortalResult(400, false, "Please fill in all required fields.");
+    return;
+  }
+
+  uint32_t updateMinutes = 0;
+  if (!parseUpdateIntervalMinutes(webServer.arg("updateInterval"), updateMinutes))
+  {
+    successfulTestToken = "";
+    sendPortalResult(400, false, "Update interval must be between 1 and 1440 minutes.");
     return;
   }
 
   String failureReason;
   if (!connectAndTest(webServer.arg("ssid"), webServer.arg("wifiPassword"),
                       webServer.arg("apiUrl"), webServer.arg("apiKey"),
-                      failureReason))
+                      updateMinutes, failureReason))
   {
     successfulTestToken = "";
     sendPortalResult(400, false, failureReason.c_str());
@@ -957,19 +1001,22 @@ static void handleSave()
 {
   if (!webServer.hasArg("ssid") || !webServer.hasArg("wifiPassword") ||
       !webServer.hasArg("apiUrl") || !webServer.hasArg("apiKey") ||
-      !webServer.hasArg("token"))
+      !webServer.hasArg("updateInterval") || !webServer.hasArg("token"))
   {
     sendPortalResult(400, false, "Test the settings before saving.");
     return;
   }
 
   String apiBaseUrl = webServer.arg("apiUrl");
+  uint32_t updateMinutes = 0;
   const bool sameTestedSettings =
+      parseUpdateIntervalMinutes(webServer.arg("updateInterval"), updateMinutes) &&
       normalizeApiBaseUrl(apiBaseUrl) &&
       webServer.arg("ssid") == testedWifiSsid &&
       webServer.arg("wifiPassword") == testedWifiPassword &&
       apiBaseUrl == testedApiBaseUrl &&
       webServer.arg("apiKey") == testedApiKey &&
+      updateMinutes == testedUpdateIntervalMinutes &&
       webServer.arg("token") == successfulTestToken &&
       successfulTestToken.length() > 0;
   if (!sameTestedSettings || WiFi.status() != WL_CONNECTED ||
@@ -996,8 +1043,10 @@ static void handleSave()
          preferences.getString("password", "\x01").length() == 0);
     const bool apiUrlStored = preferences.putString("api_url", testedApiBaseUrl) > 0;
     const bool apiKeyStored = preferences.putString("api_key", testedApiKey) > 0;
+    const bool updateIntervalStored =
+        preferences.putUInt("update_minutes", testedUpdateIntervalMinutes) > 0;
     stored = ssidStored && passwordStored && apiUrlStored && apiKeyStored &&
-             preferences.putBool("configured", true) > 0;
+             updateIntervalStored && preferences.putBool("configured", true) > 0;
   }
   preferences.end();
 
@@ -1078,7 +1127,16 @@ void setup()
     String password = preferences.getString("password", "");
     String apiUrl = preferences.getString("api_url", "");
     String apiKey = preferences.getString("api_key", "");
+    updateIntervalMinutes =
+        preferences.getUInt("update_minutes", DEFAULT_UPDATE_INTERVAL_MINUTES);
     preferences.end();
+
+    if (updateIntervalMinutes < MIN_UPDATE_INTERVAL_MINUTES ||
+        updateIntervalMinutes > MAX_UPDATE_INTERVAL_MINUTES)
+    {
+      Serial.println("Saved update interval is invalid; using the 60-minute default.");
+      updateIntervalMinutes = DEFAULT_UPDATE_INTERVAL_MINUTES;
+    }
 
     if (esp_reset_reason() != ESP_RST_DEEPSLEEP)
     {
