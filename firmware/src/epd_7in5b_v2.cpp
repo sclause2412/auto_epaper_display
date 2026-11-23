@@ -5,6 +5,7 @@
 
 #include "epd2_stream.h"
 #include "font16.h"
+#include "serial_log.h"
 
 namespace
 {
@@ -277,7 +278,7 @@ void Epd7in5bV2::drawTextImage(const char *const *lines, size_t lineCount,
   delay(100);
   if (!waitUntilIdle())
   {
-    Serial.println("E-paper refresh timed out.");
+    SerialLog::error("E-paper refresh timed out.");
   }
 }
 

@@ -17,6 +17,7 @@
 
 #include "epd2_stream.h"
 #include "epd_7in5b_v2.h"
+#include "serial_log.h"
 
 constexpr uint32_t WIFI_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 constexpr uint32_t SETUP_TIMEOUT_MS = 10UL * 60UL * 1000UL;
@@ -328,7 +329,10 @@ static String makeSetupPassword()
 static bool hasSavedConfiguration()
 {
   if (!preferences.begin("wifi", true))
+  {
+    SerialLog::error("Could not open persistent settings while checking configuration.");
     return false;
+  }
   const bool configured = preferences.getBool("configured", false) &&
                           preferences.getString("ssid", "").length() > 0 &&
                           preferences.getString("api_url", "").length() > 0 &&
@@ -459,20 +463,20 @@ static bool clearSavedSettings()
 {
   if (!preferences.begin("wifi", false))
   {
-    Serial.println("Settings reset failed: could not open settings storage.");
+    SerialLog::error("Settings reset failed: could not open settings storage.");
     return false;
   }
   const bool cleared = preferences.clear();
   preferences.end();
   if (!cleared)
   {
-    Serial.println("Settings reset failed: could not erase settings.");
+    SerialLog::error("Settings reset failed: could not erase settings.");
     return false;
   }
   statusLedEnabled = true;
   setStatusLed(true);
   memset(lastDisplayedImageHash, 0, sizeof(lastDisplayedImageHash));
-  Serial.println("Wi-Fi and API settings erased.");
+  SerialLog::info("Wi-Fi and API settings erased.");
   return true;
 }
 
@@ -497,12 +501,12 @@ static void clearLegacyImageHash()
 {
   if (!preferences.begin("wifi", false))
   {
-    Serial.println("Could not check for a legacy image hash in NVS.");
+    SerialLog::error("Could not check for a legacy image hash in NVS.");
     return;
   }
   if (preferences.isKey("image_hash") && !preferences.remove("image_hash"))
   {
-    Serial.println("Could not remove the legacy image hash from NVS.");
+    SerialLog::error("Could not remove the legacy image hash from NVS.");
   }
   preferences.end();
 }
@@ -529,6 +533,10 @@ static void prepareImageHashCache()
 static void sendPortalResult(int statusCode, bool ok, const char *message,
                              const String &token = String())
 {
+  if (ok)
+    SerialLog::infof("Setup portal response %d: %s", statusCode, message);
+  else
+    SerialLog::errorf("Setup portal response %d: %s", statusCode, message);
   JsonDocument response;
   response["ok"] = ok;
   response["message"] = message;
@@ -583,9 +591,11 @@ static void handleNetworks()
   const int count = WiFi.scanNetworks();
   if (count < 0)
   {
+    SerialLog::error("Wi-Fi network scan failed.");
     sendPortalResult(503, false, "Wi-Fi scan failed. Please try again.");
     return;
   }
+  SerialLog::infof("Wi-Fi network scan completed: %d network(s) found.", count);
 
   JsonDocument response;
   JsonArray networks = response["networks"].to<JsonArray>();
@@ -655,23 +665,36 @@ static bool validMetadata(const MetadataResponse &response,
                           ImageMetadata &imageMetadata)
 {
   if (response.overflow || response.length == 0)
+  {
+    SerialLog::error("Image metadata is empty or exceeds the supported response size.");
     return false;
+  }
 
   JsonDocument metadata;
-  if (deserializeJson(metadata, response.data, response.length))
+  const DeserializationError decodeError =
+      deserializeJson(metadata, response.data, response.length);
+  if (decodeError)
+  {
+    SerialLog::errorf("Could not decode image metadata JSON: %s.",
+                      decodeError.c_str());
     return false;
+  }
   if (metadata["width"].as<uint16_t>() != settings.width ||
       metadata["height"].as<uint16_t>() != settings.height ||
       metadata["size"].as<uint32_t>() != settings.bodyBytes ||
       strcmp(metadata["format"] | "", "EPD2") != 0)
   {
+    SerialLog::error("Image metadata dimensions, format, or declared size are invalid.");
     return false;
   }
 
   const char *hash = metadata["hash"] | "";
   const char *responseId = metadata["response_id"] | "";
   if (!isSha256Hex(hash) || !isSha256Hex(responseId))
+  {
+    SerialLog::error("Image metadata hash or response ID is not a valid SHA-256 value.");
     return false;
+  }
   imageMetadata.hash = hash;
   imageMetadata.hash.toLowerCase();
   imageMetadata.responseId = responseId;
@@ -702,6 +725,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
 {
   if (failureClass != nullptr)
     *failureClass = ServerFailure::Other;
+  SerialLog::info("Requesting current image metadata.");
   const String endpoint = apiBaseUrl + "/api/display/current";
   const String requestBody = metadataRequestBody(settings);
   MetadataResponse response{};
@@ -718,6 +742,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
     if (failureClass != nullptr)
       *failureClass = ServerFailure::Unreachable;
     failureReason = "Could not initialize the image-server request.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
@@ -740,11 +765,13 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
     if (failureClass != nullptr)
       *failureClass = ServerFailure::Unreachable;
     failureReason = "Could not send the image metadata request.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
   const int64_t contentLength = esp_http_client_fetch_headers(client);
   const int statusCode = esp_http_client_get_status_code(client);
+  SerialLog::infof("Image metadata HTTP status: %d.", statusCode);
 
   if (statusCode == 403)
   {
@@ -753,6 +780,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
     if (failureClass != nullptr)
       *failureClass = ServerFailure::ApiKeyRejected;
     failureReason = "The image server rejected the API key (403).";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
   if (statusCode == 404)
@@ -762,6 +790,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
     if (failureClass != nullptr)
       *failureClass = ServerFailure::NotFound;
     failureReason = "The image server endpoint returned HTTP 404.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
   if (statusCode <= 0 || statusCode >= 500)
@@ -771,6 +800,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
     if (failureClass != nullptr)
       *failureClass = ServerFailure::Unreachable;
     failureReason = "The image server could not be reached or returned a server error.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
   if (statusCode != 200)
@@ -778,6 +808,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     failureReason = "The image server returned HTTP " + String(statusCode) + ".";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
@@ -786,6 +817,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     failureReason = "The image metadata response is too large.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
@@ -804,6 +836,7 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
       if (failureClass != nullptr)
         *failureClass = ServerFailure::Unreachable;
       failureReason = "Could not read the image metadata response.";
+      SerialLog::error(failureReason.c_str());
       return false;
     }
     response.length += static_cast<size_t>(count);
@@ -819,6 +852,8 @@ static bool fetchCurrentImageMetadata(const String &apiBaseUrl,
     failureReason = "The server responded, but its image metadata is not valid EPD2.";
     return false;
   }
+  SerialLog::infof("Image metadata validated; declared EPD2 body size is %u bytes.",
+                   static_cast<unsigned>(imageMetadata.bodyBytes));
   if (failureClass != nullptr)
     *failureClass = ServerFailure::None;
   return true;
@@ -865,6 +900,8 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
 {
   if (failureClass != nullptr)
     *failureClass = ServerFailure::Other;
+  SerialLog::infof("Image download started; expected EPD2 body size is %u bytes.",
+                   static_cast<unsigned>(imageMetadata.bodyBytes));
   const String endpoint = apiBaseUrl + "/api/display/image";
   const String requestBody = "response_id=" + imageMetadata.responseId;
   esp_http_client_config_t config{};
@@ -880,6 +917,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
     if (failureClass != nullptr)
       *failureClass = ServerFailure::Unreachable;
     failureReason = "Could not initialize the EPD2 image download.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
@@ -902,11 +940,13 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
     if (failureClass != nullptr)
       *failureClass = ServerFailure::Unreachable;
     failureReason = "Could not open the EPD2 image download.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
   const int64_t contentLength = esp_http_client_fetch_headers(client);
   const int statusCode = esp_http_client_get_status_code(client);
+  SerialLog::infof("EPD2 image HTTP status: %d.", statusCode);
   if (statusCode != 200)
   {
     esp_http_client_close(client);
@@ -927,6 +967,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
     failureReason = statusCode == 403
                         ? "The image server rejected the API key (403)."
                         : "The image server returned HTTP " + String(statusCode) + ".";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
   if (contentLength >= 0 &&
@@ -935,6 +976,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     failureReason = "The EPD2 image has an unexpected Content-Length.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
@@ -949,6 +991,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
     if (failureClass != nullptr)
       *failureClass = ServerFailure::Unreachable;
     failureReason = "The EPD2 image ended before its five-byte header arrived.";
+    SerialLog::error(failureReason.c_str());
   }
 
   Epd2Sizes declaredSizes{};
@@ -963,13 +1006,26 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
                  declaredSizes.planeBytes == settings.planeBytes &&
                  declaredSizes.bodyBytes == imageMetadata.bodyBytes;
     if (!transferOk)
+    {
       failureReason = "The EPD2 header does not match the requested display specification.";
+      SerialLog::error(failureReason.c_str());
+    }
+    else
+    {
+      SerialLog::info("EPD2 header validated; streaming image planes to the display.");
+    }
   }
   if (transferOk &&
       mbedtls_sha256_update(&sha, header, sizeof(header)) != 0)
   {
     transferOk = false;
     failureReason = "Could not verify the EPD2 image hash.";
+    SerialLog::error(failureReason.c_str());
+  }
+  else if (!transferOk && failureReason.length() == 0)
+  {
+    failureReason = "Could not initialize EPD2 image hash verification.";
+    SerialLog::error(failureReason.c_str());
   }
 
   size_t received = 0;
@@ -986,6 +1042,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
       if (failureClass != nullptr)
         *failureClass = ServerFailure::Unreachable;
       failureReason = "The EPD2 image download ended before all bytes arrived.";
+      SerialLog::error(failureReason.c_str());
       break;
     }
 
@@ -993,6 +1050,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
     {
       transferOk = false;
       failureReason = "Could not verify the EPD2 image hash.";
+      SerialLog::error(failureReason.c_str());
       break;
     }
     for (int i = 0; i < count; ++i)
@@ -1012,6 +1070,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
     {
       transferOk = false;
       failureReason = "Could not stream image data to the e-paper controller.";
+      SerialLog::error(failureReason.c_str());
       break;
     }
     received += static_cast<size_t>(count);
@@ -1031,6 +1090,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
       failureReason = extraByte > 0
                           ? "The EPD2 image contains more than the expected number of bytes."
                           : "The EPD2 image transfer did not end cleanly.";
+      SerialLog::error(failureReason.c_str());
     }
   }
   esp_http_client_close(client);
@@ -1041,6 +1101,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
   {
     transferOk = false;
     failureReason = "Could not verify the EPD2 image hash.";
+    SerialLog::error(failureReason.c_str());
   }
   mbedtls_sha256_free(&sha);
   if (!transferOk)
@@ -1048,6 +1109,7 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
   if (received != imageMetadata.bodyBytes - sizeof(header))
   {
     failureReason = "The EPD2 image has an unexpected size.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
@@ -1060,16 +1122,22 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
   if (imageMetadata.hash != digestHex)
   {
     failureReason = "The EPD2 image does not match the advertised SHA-256 hash.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
+  SerialLog::infof("Image download completed and SHA-256 verified (%u payload bytes).",
+                   static_cast<unsigned>(received));
+  SerialLog::info("Refreshing the e-paper display.");
   if (!display.refreshAndWait())
   {
     failureReason = "The e-paper controller did not complete its refresh.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
   imageMetadata.hash.toCharArray(lastDisplayedImageHash,
                                  sizeof(lastDisplayedImageHash));
+  SerialLog::info("Display refresh completed; image hash cache updated.");
   if (failureClass != nullptr)
     *failureClass = ServerFailure::None;
   return true;
@@ -1077,16 +1145,19 @@ static bool downloadAndDisplayImage(const String &apiBaseUrl,
 
 static void sleepUntilNextUpdate()
 {
+  SerialLog::info("Preparing display and Wi-Fi for deep sleep.");
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   if (hardwareAvailable && !display.sleep())
   {
-    Serial.println("E-paper sleep failed before scheduled deep sleep.");
+    SerialLog::error("E-paper sleep failed before scheduled deep sleep.");
   }
   setStatusLed(false);
   state = State::Shutdown;
   const uint64_t updateIntervalUs =
       static_cast<uint64_t>(updateIntervalMinutes) * 60ULL * 1000000ULL;
+  SerialLog::infof("Entering deep sleep for %lu minute(s).",
+                   static_cast<unsigned long>(updateIntervalMinutes));
   esp_sleep_enable_timer_wakeup(updateIntervalUs);
   esp_deep_sleep_start();
 }
@@ -1116,7 +1187,7 @@ static void runNormalOperation()
 
   if (failureReason.length() > 0)
   {
-    Serial.printf("Normal operation failed: %s\n", failureReason.c_str());
+    SerialLog::error(failureReason.c_str());
     sleepUntilNextUpdate();
     return;
   }
@@ -1129,9 +1200,10 @@ static void runNormalOperation()
       if (!hardwareAvailable || !display.begin())
       {
         failureReason = "Could not reinitialize the display before retrying.";
-        Serial.printf("Normal operation failed: %s\n", failureReason.c_str());
+        SerialLog::error(failureReason.c_str());
         break;
       }
+      SerialLog::info("Display reinitialized for image retry.");
       reinitializeDisplay = false;
     }
 
@@ -1141,6 +1213,7 @@ static void runNormalOperation()
     {
       failure = ServerFailure::Unreachable;
       failureReason = "Could not verify the server certificate because time sync failed.";
+      SerialLog::error(failureReason.c_str());
     }
     else if (!fetchCurrentImageMetadata(apiBaseUrl, apiKey, settings,
                                         imageMetadata, failureReason, &failure) &&
@@ -1152,7 +1225,7 @@ static void runNormalOperation()
     if (failure == ServerFailure::None &&
         imageMetadata.hash == String(lastDisplayedImageHash))
     {
-      Serial.println("EPD2 image is unchanged; display refresh skipped.");
+      SerialLog::info("EPD2 image is unchanged; display refresh skipped.");
       break;
     }
 
@@ -1170,7 +1243,7 @@ static void runNormalOperation()
                                     imageMetadata, failureReason, &failure))
         {
           reinitializeDisplay = false;
-          Serial.println("New EPD2 image downloaded and displayed.");
+          SerialLog::info("New EPD2 image downloaded and displayed successfully.");
           break;
         }
       }
@@ -1180,7 +1253,7 @@ static void runNormalOperation()
     {
       if (hardwareAvailable)
         display.showApiKeyErrorMessage();
-      Serial.printf("Normal operation failed: %s\n", failureReason.c_str());
+      SerialLog::error(failureReason.c_str());
       break;
     }
 
@@ -1188,16 +1261,16 @@ static void runNormalOperation()
     {
       if (attempt < MAX_SERVER_ATTEMPTS)
       {
-        Serial.printf("Image server attempt %u/%u failed; retrying in one minute.\n",
-                      static_cast<unsigned>(attempt),
-                      static_cast<unsigned>(MAX_SERVER_ATTEMPTS));
+        SerialLog::warnf("Image server attempt %u/%u failed; retrying in one minute.",
+                         static_cast<unsigned>(attempt),
+                         static_cast<unsigned>(MAX_SERVER_ATTEMPTS));
         delay(SERVER_RETRY_DELAY_MS);
         continue;
       }
       failureReason = "Image server unavailable or endpoint returned 404 after five attempts.";
       if (hardwareAvailable)
         display.showServerUnavailableMessage();
-      Serial.printf("Normal operation failed: %s\n", failureReason.c_str());
+      SerialLog::error(failureReason.c_str());
       break;
     }
 
@@ -1205,7 +1278,7 @@ static void runNormalOperation()
     {
       failureReason = "The image server returned invalid image data.";
     }
-    Serial.printf("Normal operation failed: %s\n", failureReason.c_str());
+    SerialLog::error(failureReason.c_str());
     break;
   }
   sleepUntilNextUpdate();
@@ -1225,6 +1298,7 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
       updateMinutes > MAX_UPDATE_INTERVAL_MINUTES)
   {
     failureReason = "Please check the network, server, API key, and update interval fields.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
@@ -1233,9 +1307,11 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
       SETUP_TIMEOUT_MS - setupElapsed < TEST_TOTAL_BUDGET_MS)
   {
     failureReason = "The setup window is almost over. Restart the controller to try again.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
+  SerialLog::info("Testing connection to the selected Wi-Fi network.");
   WiFi.mode(WIFI_AP_STA);
   WiFi.disconnect(false, false);
   WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
@@ -1247,17 +1323,22 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
   }
   if (WiFi.status() != WL_CONNECTED)
   {
+    const wl_status_t wifiStatus = WiFi.status();
     WiFi.disconnect(false, false);
     WiFi.mode(WIFI_AP);
     failureReason = "Could not connect to that Wi-Fi network.";
+    SerialLog::errorf("%s (Wi-Fi status %d).", failureReason.c_str(),
+                      static_cast<int>(wifiStatus));
     return false;
   }
+  SerialLog::info("Wi-Fi test connection established.");
 
   if (apiBaseUrl.startsWith("https://") && !waitForSystemTime())
   {
     WiFi.disconnect(false, false);
     WiFi.mode(WIFI_AP);
     failureReason = "Could not verify the server certificate because time sync failed.";
+    SerialLog::error(failureReason.c_str());
     return false;
   }
 
@@ -1267,6 +1348,7 @@ static bool connectAndTest(String wifiSsid, String wifiPassword, String apiBaseU
     WiFi.mode(WIFI_AP);
     return false;
   }
+  SerialLog::info("Wi-Fi and EPD2 metadata tests succeeded.");
 
   testedWifiSsid = wifiSsid;
   testedWifiPassword = wifiPassword;
@@ -1464,8 +1546,10 @@ static void enterSetup()
   setupSsid = makeSetupSsid();
   setupPassword = makeSetupPassword();
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(setupSsid.c_str(), setupPassword.c_str(), 1, false, 4);
-  dnsServer.start(53, "*", WiFi.softAPIP());
+  const bool accessPointStarted =
+      WiFi.softAP(setupSsid.c_str(), setupPassword.c_str(), 1, false, 4);
+  const bool dnsStarted =
+      accessPointStarted && dnsServer.start(53, "*", WiFi.softAPIP());
 
   webServer.on("/", HTTP_GET, []()
                {
@@ -1478,17 +1562,32 @@ static void enterSetup()
   webServer.on("/save", HTTP_POST, handleSave);
   webServer.on("/reset", HTTP_POST, handleReset);
   webServer.begin();
-  Serial.printf("Setup AP: %s\n", setupSsid.c_str());
-  Serial.println("Setup password is intentionally not logged.");
+  if (accessPointStarted)
+  {
+    SerialLog::infof("Setup access point started at %s; credentials are not logged.",
+                     WiFi.softAPIP().toString().c_str());
+    if (dnsStarted)
+      SerialLog::info("Setup DNS redirection started.");
+    else
+      SerialLog::error("Setup DNS redirection failed to start.");
+    SerialLog::info("Setup HTTP portal started.");
+  }
+  else
+  {
+    SerialLog::error("Setup access point failed to start.");
+  }
   if (hardwareAvailable)
   {
+    SerialLog::info("Displaying setup menu.");
     display.showSetupMessage(setupSsid.c_str(), setupPassword.c_str());
   }
 }
 
 void setup()
 {
-  Serial.begin(115200);
+  SerialLog::begin(115200);
+  SerialLog::info("Firmware startup.");
+  SerialLog::infof("Reset reason: %d.", static_cast<int>(esp_reset_reason()));
   pinMode(STATUS_LED_GPIO, OUTPUT);
   if (preferences.begin("wifi", true))
   {
@@ -1500,21 +1599,27 @@ void setup()
   prepareImageHashCache();
   clearLegacyImageHash();
 
+  SerialLog::info("Initializing e-paper display.");
   hardwareAvailable = display.begin();
   if (!hardwareAvailable)
   {
-    Serial.println("E-paper initialization failed; setup continues without display output.");
+    SerialLog::error("E-paper initialization failed; setup continues without display output.");
+  }
+  else
+  {
+    SerialLog::info("E-paper initialization completed.");
   }
 
   if (!hasSavedConfiguration())
   {
+    SerialLog::info("No saved configuration found; entering setup mode.");
     enterSetup();
   }
   else
   {
     if (!preferences.begin("wifi", true))
     {
-      Serial.println("Could not read saved settings; entering setup.");
+      SerialLog::error("Could not read saved settings; entering setup.");
       enterSetup();
       return;
     }
@@ -1531,7 +1636,7 @@ void setup()
     if (updateIntervalMinutes < MIN_UPDATE_INTERVAL_MINUTES ||
         updateIntervalMinutes > MAX_UPDATE_INTERVAL_MINUTES)
     {
-      Serial.println("Saved update interval is invalid; using the 60-minute default.");
+      SerialLog::error("Saved update interval is invalid; using the 60-minute default.");
       updateIntervalMinutes = DEFAULT_UPDATE_INTERVAL_MINUTES;
     }
 
@@ -1540,17 +1645,22 @@ void setup()
       memset(lastDisplayedImageHash, 0, sizeof(lastDisplayedImageHash));
       if (hardwareAvailable)
       {
+        SerialLog::info("Displaying saved startup settings (API key is not logged).");
         display.showStartupSettings(ssid.c_str(), apiUrl.c_str(), apiKey.c_str());
       }
+      SerialLog::info("Waiting up to one minute for the BOOT setup shortcut.");
       if (waitForSetupButton(STARTUP_SETTINGS_DISPLAY_MS))
       {
+        SerialLog::info("BOOT held for five seconds; entering setup without erasing settings.");
         enterSetup();
         return;
       }
+      SerialLog::info("Startup settings window ended.");
       setStatusLed(true);
     }
 
     stateStartedMs = millis();
+    SerialLog::info("Connecting to the saved Wi-Fi network.");
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), password.c_str());
   }
@@ -1566,15 +1676,17 @@ void loop()
     uint32_t elapsed = millis() - stateStartedMs;
     if (elapsed >= SETUP_TIMEOUT_MS)
     {
+      SerialLog::error("Setup timed out; closing the portal and entering deep sleep.");
       dnsServer.stop();
       webServer.stop();
       WiFi.softAPdisconnect(true);
       WiFi.mode(WIFI_OFF);
       if (hardwareAvailable)
       {
+        SerialLog::info("Displaying setup timeout message.");
         display.showTimeoutMessage();
         if (!display.sleep())
-          Serial.println("E-paper sleep failed after setup timeout.");
+          SerialLog::error("E-paper sleep failed after setup timeout.");
       }
       setStatusLed(false);
       state = State::Shutdown;
@@ -1586,10 +1698,13 @@ void loop()
   {
     if (WiFi.status() == WL_CONNECTED)
     {
+      SerialLog::info("Wi-Fi connected; entering normal operation.");
       state = State::NormalOperation;
     }
     else if (millis() - stateStartedMs >= WIFI_TIMEOUT_MS)
     {
+      SerialLog::errorf("Saved Wi-Fi connection timed out after five minutes (status %d).",
+                        static_cast<int>(WiFi.status()));
       enterSetup();
     }
   }
