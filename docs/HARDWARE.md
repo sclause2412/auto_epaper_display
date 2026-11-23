@@ -38,9 +38,12 @@ resistor setting; its table lists **0.47R (B)** for the 7.5-inch e-Paper (B).
 Confirm the physical switch position before first refresh. The same manual
 describes the board's display connections as fixed.
 
-The physical board's BOOT button is confirmed to use GPIO0. For factory reset,
-press and release EN, then hold BOOT only after firmware startup. Holding BOOT
-while resetting or applying power can select the ESP32 ROM download mode.
+The physical board's BOOT button is confirmed to use GPIO0. Hold BOOT for five
+seconds while the startup-settings screen is visible to enter setup mode
+without erasing the saved settings. Factory reset is available from the
+configuration portal and erases the Wi-Fi and image-server settings there.
+Holding BOOT while resetting or applying power can select the ESP32 ROM
+download mode.
 
 ## Initialization and image transfer
 
@@ -67,11 +70,17 @@ chunk writes. A partial-window path exists separately in
 `EPD_7IN5B_V2_Display_Partial()` and should not be confused with full-frame
 transfer.
 
-The firmware adapter in
-[`firmware/src/epd_7in5b_v2.cpp`](../firmware/src/epd_7in5b_v2.cpp) uses that
-command sequence for fixed-size streaming writes. Its setup screen is
-generated one row at a time with a 100-byte row buffer; it does not allocate
-a framebuffer.
+The EPD2 receiver in [`firmware/src/main.cpp`](../firmware/src/main.cpp)
+validates the five-byte header and derived body length, then streams configured
+planes through the hardware adapter in
+[`firmware/src/epd_7in5b_v2.cpp`](../firmware/src/epd_7in5b_v2.cpp) using a
+fixed 512-byte transfer buffer. Chunks crossing the plane boundary are split
+between black and red, and chunks after the boundary are routed to red. This
+panel always uses its fixed 800 x 480 geometry and two planes in `black|red`
+order; these hardware properties are not provisioning settings. Firmware
+rejects an EPD2 header whose dimensions or plane count do not match that
+profile. Its setup screen is generated one row at a time with a 100-byte row
+buffer; it does not allocate a framebuffer.
 
 ## EPD2 conversion, bit order, and plane layout
 
@@ -101,6 +110,13 @@ row-major: 100 bytes per row, rows iterated from 0 through 479. The source
 does not explicitly configure a full-frame RAM window or provide an IC
 datasheet, so physical scan orientation must not be inferred beyond this
 buffer order.
+
+The firmware must consume the EPD2 five-byte width/height/color-count header
+before streaming planes. It must compare the declared dimensions and color
+count with the configured display and with the variable body size calculated
+as `5 + ceil(width * height / 8) * colorCount`. The existing 800 x 480
+two-color values remain a compatible geometry, but the streaming adapter must
+support variable totals rather than assuming a fixed 96,000-byte body.
 
 ## Refresh, BUSY, and low power
 

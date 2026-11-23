@@ -10,6 +10,10 @@ keeps power use low between checks.
 - Provisions Wi-Fi and server settings through an on-device setup portal.
 - Fetches authenticated image metadata and transfers an image only when its
   content hash changes.
+- Supports a configurable content ID, display geometry, and ordered color
+  configuration for multiple devices.
+- Provides two example contents: content ID 0 for the legacy English weekday
+  image and content ID 1 for the German weekday plus date image.
 - Streams image data to the display controller without allocating a complete
   image framebuffer in ESP32 memory.
 - Sleeps between scheduled image checks.

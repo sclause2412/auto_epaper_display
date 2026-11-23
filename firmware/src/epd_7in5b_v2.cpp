@@ -282,7 +282,7 @@ void Epd7in5bV2::drawTextImage(const char *const *lines, size_t lineCount,
 }
 
 void Epd7in5bV2::showStartupSettings(const char *ssid, const char *apiUrl,
-                                     const char *maskedApiKey)
+                                     const char *apiKey)
 {
   constexpr size_t MAX_LINE_CHARS = EPD2_WIDTH / 11;
   constexpr size_t MAX_LINES = 14;
@@ -321,9 +321,24 @@ void Epd7in5bV2::showStartupSettings(const char *ssid, const char *apiUrl,
   appendLine(label);
   appendLine("API URL:");
   appendWrapped(apiUrl);
-  appendLine("API key (masked):");
-  appendWrapped(maskedApiKey);
-  appendLine("Reset: Hold BOOT for 5 sec now");
+  char apiKeyLabel[MAX_LINE_CHARS + 1];
+  const size_t apiKeyLength = apiKey ? strlen(apiKey) : 0;
+  const size_t previewLength = apiKeyLength < 4 ? apiKeyLength : 4;
+  const size_t maskedLength =
+      apiKeyLength > previewLength ? apiKeyLength - previewLength : 0;
+  const size_t prefixLength = snprintf(apiKeyLabel, sizeof(apiKeyLabel),
+                                       "API key: %.*s",
+                                       static_cast<int>(previewLength),
+                                       apiKey ? apiKey : "");
+  size_t labelLength = prefixLength;
+  for (size_t i = 0; i < maskedLength && labelLength < sizeof(apiKeyLabel) - 1;
+       ++i)
+  {
+    apiKeyLabel[labelLength++] = '*';
+  }
+  apiKeyLabel[labelLength] = '\0';
+  appendLine(apiKeyLabel);
+  appendLine("Setup: Hold BOOT for 5 sec");
   appendLine("Image fetch begins in 1 minute");
   drawTextImage(lines, lineCount, 32, static_cast<int>(lineCount) - 2);
 }
@@ -346,8 +361,8 @@ void Epd7in5bV2::showSetupMessage(const char *ssid, const char *password)
 void Epd7in5bV2::showTimeoutMessage()
 {
   const char *lines[] = {
-      "Setup was not completed.",
-      "Press EN to reboot and enter setup mode...",
+      "Please restart the display to enter Setup mode...",
+      "Press EN to reboot.",
   };
   drawTextImage(lines, sizeof(lines) / sizeof(lines[0]), 42, 1);
 }

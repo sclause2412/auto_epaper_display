@@ -11,7 +11,7 @@ public:
   bool refreshAndWait() override;
   bool sleep() override;
   void showStartupSettings(const char *ssid, const char *apiUrl,
-                           const char *maskedApiKey) override;
+                           const char *apiKey) override;
   void showSetupMessage(const char *ssid, const char *password) override;
   void showTimeoutMessage() override;
   void showApiKeyErrorMessage() override;

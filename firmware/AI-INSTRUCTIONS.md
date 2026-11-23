@@ -29,8 +29,8 @@ invent pins or controller commands.
 
 ## Most important memory requirement: no full framebuffer
 
-The firmware must never allocate a complete 96,000-byte image buffer or
-two complete 48,000-byte planes in ESP32 RAM.
+The firmware must never allocate a complete variable-size image buffer or
+complete color planes in ESP32 RAM.
 
 -   Use a small, fixed transfer buffer; 512 bytes is recommended.
 -   Read HTTP data in chunks.
@@ -89,8 +89,10 @@ Wi-Fi credentials must not be hardcoded in source code.
     credentials initially. Replace them only after new credentials have
     been configured and a connection using them succeeds.
 6.  On every startup except a scheduled deep-sleep wake, show the saved
-    SSID, image-server URL, and an API key masked after its first four
-    characters for one minute before starting the first image request.
+    SSID and image-server URL for one minute before starting the first image
+    request. Never display the API key; show a notice that it is not shown.
+    During this window, holding BOOT for five seconds enters setup mode
+    without erasing settings.
 
 ### Setup access point
 
@@ -157,17 +159,19 @@ the display electronics are subsequently placed in a low-power state.
 
 ## Reset Wi-Fi configuration
 
-For a factory reset, press and release EN to restart the controller. After
-the startup-settings screen appears, hold BOOT for five seconds. BOOT is
-confirmed to be GPIO0 on this board. Never hold BOOT while pressing EN or
-powering on, because GPIO0 is a boot-strapping pin and can select ROM
-download mode. The GPIO2 LED blinks rapidly while BOOT is held during the
-startup-status window, then stays off; ignore BOOT presses outside that
-window.
+Holding BOOT for five seconds during the startup-settings window enters setup
+mode without erasing saved settings. BOOT is confirmed to be GPIO0 on this
+board. Never hold BOOT while pressing EN or powering on, because GPIO0 is a
+boot-strapping pin and can select ROM download mode. The GPIO2 LED blinks
+rapidly while BOOT is held during the startup-status window; ignore BOOT
+presses outside that window.
 
-On confirmation, erase the complete Wi-Fi settings namespace, including
-Wi-Fi credentials, image-server URL, and API key, then enter setup mode.
-Never display or log the erased values.
+A factory reset is performed only from the configuration portal. Its explicit
+reset action erases the complete Wi-Fi settings namespace, including Wi-Fi
+credentials, image-server URL, and API key, then restarts into setup mode.
+Never display or log the erased values. The portal must not return or prefill
+the API key; an empty key field means to retain the saved key, while a
+non-empty value replaces it.
 
 ## Operating states and timeouts
 
@@ -198,13 +202,15 @@ setup immediately.
 
 After successfully connecting to Wi-Fi:
 
-1.  Request `GET /api/display/current` over HTTP.
-    Include the configured API key as an `X-API-Key` header. Provision the
-    key through the setup portal and store it in NVS only after the
-    connection and image-status tests succeed. Never put it in a URL, log
-    it, or commit it to firmware source.
-2.  Validate the JSON: `width=800`, `height=480`, `format=EPD2`,
-    `size=96000`.
+1.  POST `/api/display/current` over HTTP.
+    Include the configured API key as an `X-API-Key` header and send content
+    ID, width, height, and the ordered pipe-separated color string in the
+    POST body. Accept any non-negative content ID representable as a 64-bit
+    integer; do not limit it to the example IDs 0 and 1. Width, height, color count,
+    and color order are fixed by the selected hardware profile and must not be
+    exposed as configuration settings.
+2.  Validate the JSON: `width`, `height`, `format=EPD2`, `response_id`, and
+    a size derived from the header and declared color count.
 3.  Compare the server hash with the volatile RTC-RAM cache of the last
     successfully displayed image. Never store an image hash in NVS or other
     persistent storage. Clear the cache after resets other than scheduled
@@ -212,12 +218,13 @@ After successfully connecting to Wi-Fi:
 4.  If the hash is unchanged: do not download the image and do not
     perform an unnecessary display refresh.
 5.  If the hash is new:
-    -   request the binary image endpoint;
+    -   POST the binary image endpoint with `response_id`;
     -   optionally use `If-None-Match`/ETag;
     -   validate the response status;
-    -   stream exactly 96,000 bytes;
-    -   write the black and red planes directly to controller RAM in the
-        specified order;
+    -   validate and consume the five-byte header;
+    -   stream exactly the declared variable-size body;
+    -   write each logical color plane directly to controller RAM in the
+        declared order;
     -   trigger the controller refresh according to the verified hardware record;
     -   wait for BUSY completion with a timeout;
     -   update the volatile RTC-RAM hash cache only after the complete
@@ -229,7 +236,7 @@ If the hash is unchanged, the device can go directly to deep sleep after
 the hash check. No full image transfer is needed.
 
 On an unreachable image server, HTTP 404, or server error, retry the
-metadata/image request every minute, up to ten attempts. After the tenth
+metadata/image request every minute, up to five attempts. After the fifth
 failure, display an error and continue the normal one-hour deep-sleep
 cycle. A `403 Forbidden` is not retried minutely; display the API-key
 error immediately and continue the hourly cycle. On invalid metadata,
@@ -258,10 +265,10 @@ the RTC-RAM hash cache or report success.
     as an authentication/configuration error; do not download, refresh,
     or update the volatile RTC-RAM hash cache.
 -   Validate HTTP status codes and Content-Length where available.
--   Correctly handle chunked transfer encoding if the server uses it;
-    preferably the server should provide a known Content-Length of
-    96,000 bytes.
--   Abort if fewer or more than 96,000 image bytes are received.
+-   Correctly handle chunked transfer encoding if the server uses it.
+-   Prefer a known Content-Length equal to the variable size declared by the
+    current metadata.
+-   Abort if fewer or more than the calculated EPD2 body size is received.
 -   Never mark partially received data as a valid image.
 -   Do not log passwords, Wi-Fi PSKs, or other secrets.
 -   Do not log or expose the API key. Never send it in URL query
@@ -301,14 +308,14 @@ Create build and test instructions and verify at least:
 14. Setup ends after ten minutes; the exact message is displayed and
     deep sleep is entered.
 15. No automatic restart occurs after setup timeout.
-16. The EN-then-BOOT sequence clears Wi-Fi and API settings and enters
-    setup mode without holding GPIO0 during reset.
+16. Holding BOOT for five seconds during the startup screen enters setup
+    without erasing settings; the portal reset action clears them.
 17. A `403 Forbidden` from either image endpoint displays a clear API-key
     error on the e-paper and does not update the cached hash.
-18. Non-deep-sleep startup displays SSID, URL, and the masked key for
+18. Non-deep-sleep startup displays SSID and URL, but never the API key, for
     one minute before the first image request.
-19. Unreachable server, 404, and server errors retry every minute ten
-    times, then display an error and use the one-hour sleep interval.
+19. Unreachable server, 404, and server errors retry every minute for five
+    attempts, then display an error and use the one-hour sleep interval.
 
 Test display orientation, bit order, and color mapping with the test
 images listed in the EPD2 specification on real hardware.

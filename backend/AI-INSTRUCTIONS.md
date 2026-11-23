@@ -17,9 +17,9 @@ first explain why and propose a coordinated specification change.
 
 ## Goal
 
-The current example generates a daily weekday/date image, converts it
-into the EPD2 format, and serves it over HTTP. It has no upload or
-generation endpoint.
+The current example generates configurable weekday/date or legacy example
+images, converts them into the EPD2 format, and serves them over HTTP. It has
+no upload or user-provided image endpoint.
 
 The firmware should download the image only when its SHA-256 hash has
 changed.
@@ -28,16 +28,14 @@ changed.
 
 Generate exactly the format defined in `../docs/EPD2-SPECIFICATION.md`:
 
--   800 × 480 pixels.
--   1 bit per pixel per plane.
--   48,000 bytes for the black plane.
--   48,000 bytes for the red plane.
--   Order: black plane, then red plane.
--   Total length: exactly 96,000 bytes.
--   No header in the binary body.
--   White: both logical bits 0.
--   Black: black bit 1, red bit 0.
--   Red: black bit 0, red bit 1.
+-   A five-byte header containing width, height, and color-plane count.
+-   1 bit per pixel per logical color plane.
+-   Plane size = `ceil(width * height / 8)` bytes.
+-   Total size = `5 + planeSize * colorCount`.
+-   Plane order follows the display's ordered `COLORS` string.
+-   White: unset in every plane.
+-   Each named color: matching plane bit set.
+-   Controller polarity and conversion remain firmware concerns.
 
 The exact bit order within each byte is explicitly marked in the
 specification as requiring verification against the firmware hardware record.
@@ -53,44 +51,69 @@ convert it into EPD2. There is no user-provided image or upload endpoint.
 
 Requirements:
 
-1.  Generate the example PNG at exactly 800 × 480 pixels.
-2.  Quantize colors deterministically to black, white, or red.
+1.  Generate the example PNG at the requested width and height.
+2.  Quantize colors deterministically according to the supported color list.
 3.  Make dithering optional only if it is configurable and documented.
-4.  Ensure no pixel is set in both planes at the same time.
-5.  Validate the output is exactly 96,000 bytes and that both planes are
-    valid before publication.
+4.  Ensure no pixel is set in more than one plane.
+5.  Validate the five-byte header and exact variable body length before
+    publication.
 
 Keep image processing maintainable and separate from HTTP controllers
 and filesystem access.
+
+For content generation, implement these exact example variants:
+
+- Content ID 0: white background; English weekday name, for example `Tuesday`,
+  in the upper centered text area; date in `DD.MM.YYYY`, for example
+  `24.11.2026`, in the lower centered text area.
+- Content ID 1: identical layout and date format with the German weekday name,
+  for example `Dienstag`.
+- At 800 x 480, reference the existing layout: weekday around y=190 and date
+  around y=300.
+- One supported logical color: render both text blocks in that color.
+- Two or more supported logical colors: weekday red and date black; ignore
+  additional colors from the third position onward.
+- Cache ID 0 and ID 1 independently and include the current date in the cache
+  key for each.
 
 ## HTTP endpoints
 
 Implement the endpoints defined in the shared specification:
 
-### `GET /api/display/current`
+### `POST /api/display/current`
 
-Require the configured API key in the `X-API-Key` request header.
-Requests with a missing or invalid key return `403 Forbidden`.
+Accept `POST` and `GET`. Require the configured API key in `X-API-Key`,
+or as `API_KEY`/`api_key` in the POST body. Never accept or log the key in a
+URL query parameter. Accept content ID, width, height, and ordered
+colors through `CONTENT_ID`/`content_id`, `WIDTH`/`width`/
+`display_width`, `HEIGHT`/`height`/`display_height`, and
+`COLORS`/`colors`/`color_config`/`display_colors`.
+
+Missing or invalid keys return `403 Forbidden`. Unknown content IDs return
+`404 Not Found`. Invalid geometry or colors return `400 Bad Request`.
 
 Return JSON metadata containing:
 
--   `hash`
--   `width`
--   `height`
--   `format`
--   `size`
--   `url`
+- `hash`
+- `response_id`
+- `width`
+- `height`
+- `format`
+- `size`
+- `url`
 
-Expected values: 800, 480, `EPD2`, 96000. The hash is SHA-256 over the
-exact binary body returned by the image endpoint.
+The hash is SHA-256 over the complete EPD2 body including the header. The
+response ID is SHA-256 over the canonical configuration:
+`content_id=<id>|width=<width>|height=<height>|colors=<ordered-colors>`.
 
-### `GET /api/display/image`
+### `POST /api/display/image`
 
-Require the configured API key in the `X-API-Key` request header.
-Requests with a missing or invalid key return `403 Forbidden`.
+Accept `POST` and `GET`. Require authentication and a valid
+`RESPONSE_ID`/`response_id`. Missing or unknown response IDs return
+`404 Not Found`.
 
-Return only the 96,000 binary bytes as `application/octet-stream`. No
-JSON and no additional file header.
+Return only the matching variable-size EPD2 body as
+`application/octet-stream`.
 
 Support `ETag` and `If-None-Match` if practical, according to the
 specification. If the ETag matches, the endpoint may return
@@ -98,13 +121,13 @@ specification. If the ETag matches, the endpoint may return
 
 ## Example image cache
 
-The example stores the generated PNG, EPD file, and a date marker under
-`storage/`. Reuse them while the date marker matches the current date
-and the EPD file is exactly 96,000 bytes. Generate temporary files in
-the same directory and replace the cache files only after successful
-generation. The metadata endpoint calculates SHA-256 from the cached
-EPD file. Do not add a manifest or lock unless the project requirements
-grow beyond this example.
+The example stores generated PNG and EPD files under `storage/`, keyed by
+content ID, dimensions, ordered colors, and date when required. Reuse a cache
+entry only after the header and exact variable body length have been validated.
+Generate temporary files in the same directory and replace cache files only
+after successful generation. The metadata endpoint calculates SHA-256 from the
+cached complete EPD body. Maintain a response-ID-to-configuration mapping so
+the image endpoint knows exactly which file is requested.
 
 ## Security and robustness
 

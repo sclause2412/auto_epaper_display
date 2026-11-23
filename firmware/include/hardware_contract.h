@@ -11,7 +11,7 @@ public:
   virtual bool refreshAndWait() = 0;
   virtual bool sleep() = 0;
   virtual void showStartupSettings(const char *ssid, const char *apiUrl,
-                                   const char *maskedApiKey) = 0;
+                                   const char *apiKey) = 0;
   virtual void showSetupMessage(const char *ssid, const char *password) = 0;
   virtual void showTimeoutMessage() = 0;
   virtual void showApiKeyErrorMessage() = 0;
